@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Mosshy relay daemon - polls herdr, exposes WebSocket on port 8375, advertises via mDNS."""
 import asyncio, json, os, re, signal, socket, subprocess
-from websockets.server import serve
+
+try:
+    from websockets.asyncio.server import serve
+except ImportError:
+    from websockets.server import serve
 
 HERDR = os.environ.get("HERDR_BIN", "/opt/homebrew/bin/herdr")
 WS_PORT = 8375
@@ -68,7 +72,7 @@ async def broadcast(msg):
             await ws.send(data)
         except Exception:
             dead.add(ws)
-    clients -= dead
+    clients.difference_update(dead)
 
 
 async def poll_loop():
@@ -133,31 +137,38 @@ class UDPPlugin(asyncio.DatagramProtocol):
 def start_mdns():
     try:
         from zeroconf import Zeroconf, ServiceInfo
+        import socket as sock_mod
+        import threading
+        ip = sock_mod.gethostbyname(sock_mod.gethostname())
         info = ServiceInfo(
             "_mosshy._tcp.local.", "Mosshy._mosshy._tcp.local.",
-            addresses=[socket.inet_aton(socket.gethostbyname(socket.gethostname()))],
-            port=WS_PORT,
+            addresses=[sock_mod.inet_aton(ip)], port=WS_PORT,
         )
         zc = Zeroconf()
-        zc.register_service(info)
+        threading.Thread(target=zc.register_service, args=(info,), daemon=True).start()
+        print(f"mDNS registering at {ip}")
         return zc, info
-    except ImportError:
-        print("zeroconf not installed, skipping mDNS")
+    except Exception as e:
+        print(f"mDNS skipped: {e}")
         return None, None
 
 
 async def main():
     zc, info = start_mdns()
-    loop = asyncio.get_event_loop()
-    await loop.create_datagram_endpoint(UDPPlugin, local_addr=("127.0.0.1", 8376))
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.create_datagram_endpoint(UDPPlugin, local_addr=("127.0.0.1", 8376))
+    except OSError:
+        print("UDP 8376 in use, plugin push disabled")
     asyncio.create_task(poll_loop())
     asyncio.create_task(event_push())
+    server = await serve(handle_client, "0.0.0.0", WS_PORT)
     print(f"mosshy relay listening on ws://0.0.0.0:{WS_PORT}")
-    async with serve(handle_client, "0.0.0.0", WS_PORT):
-        stop = loop.create_future()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set_result, None)
-        await stop
+    stop = loop.create_future()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set_result, None)
+    await stop
+    server.close()
     if zc and info:
         zc.unregister_service(info)
         zc.close()
