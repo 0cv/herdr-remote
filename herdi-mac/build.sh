@@ -2,9 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="HerdiMac"
-BUNDLE_ID="com.dcolinmorgan.herdi-mac"
-VERSION="0.2.1"
+APP_NAME="Herdi"
+BUNDLE_ID="com.dcolinmorgan.herdi"
+VERSION="0.3.0"
 BUILD_DIR="$SCRIPT_DIR/.build/release"
 APP_DIR="$SCRIPT_DIR/dist/$APP_NAME.app"
 
@@ -19,6 +19,11 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
+# Copy icon if present
+if [ -f "$SCRIPT_DIR/Sources/Assets/AppIcon.icns" ]; then
+    cp "$SCRIPT_DIR/Sources/Assets/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+fi
+
 cat > "$APP_DIR/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,6 +37,8 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <string>Herdi</string>
     <key>CFBundleDisplayName</key>
     <string>Herdi</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>

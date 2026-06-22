@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "HerdiMac",
+    name: "Herdi",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "HerdiMac",
+            name: "Herdi",
             path: "Sources"
         )
     ]

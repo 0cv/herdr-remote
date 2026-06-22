@@ -2,7 +2,7 @@ import SwiftUI
 import ServiceManagement
 
 @main
-struct HerdiMacApp: App {
+struct HerdiApp: App {
     @State private var relay = RelayConnection()
     @AppStorage("launchAtLogin") private var launchAtLogin = false
 

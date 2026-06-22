@@ -59,7 +59,6 @@ final class RelayConnection {
         task?.cancel(with: .normalClosure, reason: nil)
         task = session.webSocketTask(with: url)
         task?.resume()
-        isConnected = true
         reconnectAttempt = 0
         listen()
     }
@@ -79,6 +78,9 @@ final class RelayConnection {
             guard let self else { return }
             switch result {
             case .success(let message):
+                DispatchQueue.main.async {
+                    if !self.isConnected { self.isConnected = true }
+                }
                 switch message {
                 case .string(let text): self.handle(text)
                 case .data(let data): self.handle(String(data: data, encoding: .utf8) ?? "")
