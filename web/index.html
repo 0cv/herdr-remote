@@ -84,8 +84,8 @@ let agents = [];
 let selectedAgent = null;
 
 // Load saved URL
-const saved = localStorage.getItem('herdr_relay_url');
-if (saved) document.getElementById('relayUrl').value = saved;
+const saved = localStorage.getItem('herdr_relay_url') || 'wss://para-considered-minutes-bronze.trycloudflare.com';
+document.getElementById('relayUrl').value = saved;
 
 function connect() {
   const url = document.getElementById('relayUrl').value.trim();
@@ -188,7 +188,7 @@ function sendCustom() {
 }
 
 // Auto-connect on load
-if (saved) setTimeout(connect, 100);
+setTimeout(connect, 100);
 </script>
 </body>
 </html>
