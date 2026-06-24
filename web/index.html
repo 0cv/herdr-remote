@@ -5,67 +5,107 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;herdr-remote&quot;,&quot;short_name&quot;:&quot;herdr&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;%230a0a0a&quot;,&quot;theme_color&quot;:&quot;%230a0a0a&quot;}">
 <title>herdr-remote</title>
 <style>
+:root {
+  --bg: #0a0a0a; --surface: #1a1a1a; --border: #222; --text: #e5e5e5; --muted: #888;
+  --green: #22c55e; --red: #ef4444; --blue: #3b82f6; --orange: #f97316;
+}
+[data-theme="light"] {
+  --bg: #f5f5f5; --surface: #fff; --border: #ddd; --text: #1a1a1a; --muted: #666;
+}
+[data-theme="nord"] {
+  --bg: #2e3440; --surface: #3b4252; --border: #434c5e; --text: #eceff4; --muted: #8fbcbb;
+  --green: #a3be8c; --red: #bf616a; --blue: #81a1c1; --orange: #d08770;
+}
+[data-theme="solarized"] {
+  --bg: #002b36; --surface: #073642; --border: #586e75; --text: #839496; --muted: #657b83;
+  --green: #859900; --red: #dc322f; --blue: #268bd2; --orange: #cb4b16;
+}
+[data-theme="rose"] {
+  --bg: #191724; --surface: #1f1d2e; --border: #26233a; --text: #e0def4; --muted: #908caa;
+  --green: #9ccfd8; --red: #eb6f92; --blue: #c4a7e7; --orange: #f6c177;
+}
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; min-height: 100dvh; display: flex; flex-direction: column; }
-.header { padding: 12px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #222; }
-.header h1 { font-size: 1rem; flex: 1; }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.dot.green { background: #22c55e; } .dot.red { background: #ef4444; } .dot.orange { background: #f97316; }
+body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100dvh; display: flex; flex-direction: column; }
 
-.connect-bar { padding: 8px 16px; display: flex; gap: 8px; border-bottom: 1px solid #222; }
-.connect-bar input { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #e5e5e5; font-size: 13px; }
-.connect-bar button { padding: 8px 12px; border-radius: 6px; border: none; background: #22c55e; color: #000; font-weight: 600; font-size: 13px; }
+.header { padding: 12px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+.header h1 { font-size: 1rem; flex: 1; }
+.header button { background: none; border: none; color: var(--muted); font-size: 1.2rem; cursor: pointer; padding: 4px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
 .view { flex: 1; overflow-y: auto; }
 
+/* Settings */
+.settings { display: none; padding: 16px; }
+.settings.active { display: block; }
+.settings h2 { font-size: 0.9rem; margin-bottom: 12px; }
+.setting-group { background: var(--surface); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.setting-group label { font-size: 0.75rem; color: var(--muted); display: block; margin-bottom: 6px; }
+.setting-group input { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
+.setting-group select { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
+.setting-group .hint { font-size: 0.65rem; color: var(--muted); margin-top: 4px; }
+.setting-group button { margin-top: 8px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--green); color: #000; font-weight: 600; font-size: 13px; cursor: pointer; }
+.theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.theme-btn { padding: 8px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.7rem; cursor: pointer; text-align: center; }
+.theme-btn.active { border-color: var(--green); }
+
 /* Agent list */
 .agents { padding: 12px; }
-.section-header { font-size: 0.65rem; text-transform: uppercase; color: #666; margin: 12px 0 6px; display: flex; align-items: center; gap: 5px; }
-.agent { background: #1a1a1a; border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.agent:active { background: #2a2a2a; }
+.section-header { font-size: 0.65rem; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; display: flex; align-items: center; gap: 5px; }
+.agent { background: var(--surface); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.agent:active { opacity: 0.7; }
 .agent .info { flex: 1; }
 .agent .project { font-size: 0.85rem; font-weight: 500; }
-.agent .meta { font-size: 0.65rem; color: #888; }
+.agent .meta { font-size: 0.65rem; color: var(--muted); }
 
 /* Terminal view */
 .terminal-view { display: none; flex-direction: column; height: 100%; }
 .terminal-view.active { display: flex; flex: 1; }
-.term-header { padding: 10px 16px; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 8px; }
-.term-header .back { background: none; border: none; color: #3b82f6; font-size: 1.2rem; cursor: pointer; padding: 4px 8px; }
-.term-header .title { flex: 1; font-size: 0.85rem; font-weight: 500; }
-.term-header .refresh-btn { background: none; border: none; color: #888; font-size: 1rem; cursor: pointer; }
-.term-content { flex: 1; overflow-y: auto; padding: 8px 12px; background: #000; font-family: 'SF Mono', 'Menlo', monospace; font-size: 11px; line-height: 1.4; white-space: pre-wrap; color: #ccc; }
-.term-input { border-top: 1px solid #333; padding: 8px 12px; display: flex; gap: 6px; }
-.term-input input { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #e5e5e5; font-size: 14px; font-family: monospace; }
-.term-input button { padding: 8px 12px; border-radius: 6px; border: none; background: #3b82f6; color: #fff; font-weight: 600; }
+.term-header { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+.term-header .back { background: none; border: none; color: var(--blue); font-size: 1.4rem; cursor: pointer; padding: 4px 8px; }
+.term-header .title { flex: 1; font-size: 0.8rem; font-weight: 500; }
+.term-header .refresh-btn { background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
+.term-content { flex: 1; overflow-y: auto; padding: 8px 12px; background: #000; font-family: 'SF Mono', 'Menlo', monospace; font-size: 11px; line-height: 1.4; white-space: pre-wrap; color: #ccc; -webkit-overflow-scrolling: touch; }
+.quick-actions { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; }
+.quick-actions button { padding: 10px 14px; border-radius: 8px; border: none; font-size: 0.75rem; font-weight: 600; cursor: pointer; flex: 1; min-width: 70px; }
+.btn-yes { background: var(--green); color: #000; } .btn-trust { background: var(--blue); color: #fff; } .btn-no { background: var(--red); color: #fff; }
+.term-input { border-top: 1px solid var(--border); padding: 8px 12px; display: flex; gap: 6px; background: var(--surface); }
+.term-input input { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; font-family: monospace; }
+.term-input button { padding: 10px 14px; border-radius: 6px; border: none; background: var(--blue); color: #fff; font-weight: 700; font-size: 16px; }
+.term-keys { border-top: 1px solid var(--border); padding: 6px 8px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; background: var(--surface); }
+.term-keys button { padding: 10px 0; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; cursor: pointer; }
+.term-keys button:active { background: var(--border); }
 
-/* Special keyboard */
-.term-keys { border-top: 1px solid #222; padding: 8px; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; background: #111; }
-.term-keys button { padding: 8px 14px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #e5e5e5; font-size: 13px; cursor: pointer; min-width: 44px; }
-.term-keys button:active { background: #333; }
-.term-keys .wide { flex: 1; max-width: 120px; }
-
-/* Quick actions for blocked */
-.quick-actions { padding: 8px 12px; border-top: 1px solid #222; display: flex; gap: 6px; flex-wrap: wrap; }
-.quick-actions button { padding: 10px 14px; border-radius: 8px; border: none; font-size: 0.8rem; font-weight: 600; cursor: pointer; flex: 1; min-width: 80px; }
-.btn-yes { background: #22c55e; color: #000; }
-.btn-trust { background: #3b82f6; color: #fff; }
-.btn-no { background: #ef4444; color: #fff; }
+.empty { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 0.85rem; }
 </style>
 </head>
 <body>
 
 <div class="header">
   <span class="dot" id="statusDot"></span>
-  <h1>🐑 herdr-remote</h1>
-  <span id="agentCount" style="font-size:0.7rem;color:#888"></span>
+  <h1>🐑 herdr</h1>
+  <span id="agentCount" style="font-size:0.7rem;color:var(--muted)"></span>
+  <button onclick="toggleSettings()">⚙</button>
 </div>
 
-<div class="connect-bar" id="connectBar">
-  <input id="relayUrl" type="url" placeholder="wss://your-tunnel.trycloudflare.com" />
-  <button onclick="connect()">Connect</button>
+<div class="settings" id="settingsView">
+  <h2>Settings</h2>
+  <div class="setting-group">
+    <label>Relay URL</label>
+    <input id="relayUrl" type="url" placeholder="wss://your-tunnel.trycloudflare.com" />
+    <button onclick="saveAndConnect()">Connect</button>
+    <div class="hint">Run <code>cloudflared tunnel --url http://localhost:8375</code> to get a URL. <a href="https://github.com/dcolinmorgan/herdr-remote/blob/main/QUICKSTART.md" style="color:var(--blue)">Setup guide →</a></div>
+  </div>
+  <div class="setting-group">
+    <label>Theme</label>
+    <div class="theme-grid" id="themeGrid"></div>
+  </div>
+  <div class="setting-group">
+    <label>Status</label>
+    <div id="settingsStatus" style="font-size:0.75rem"></div>
+  </div>
 </div>
 
 <div class="view" id="agentListView">
@@ -81,7 +121,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: #0a0a0a; c
   <div class="term-content" id="termContent">Loading…</div>
   <div class="quick-actions" id="quickActions"></div>
   <div class="term-input">
-    <input id="termInput" placeholder="Type command…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+    <input id="termInput" placeholder="Type…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
     <button onclick="sendText()">⏎</button>
   </div>
   <div class="term-keys">
@@ -89,8 +129,8 @@ body { font-family: -apple-system, system-ui, sans-serif; background: #0a0a0a; c
     <button onclick="sendKey('Down')">↓</button>
     <button onclick="sendKey('Left')">←</button>
     <button onclick="sendKey('Right')">→</button>
-    <button onclick="sendKey('Enter')">Enter</button>
-    <button onclick="sendKey('Tab')">Tab</button>
+    <button onclick="sendKey('Enter')">⏎</button>
+    <button onclick="sendKey('Tab')">⇥</button>
     <button onclick="sendKey('Escape')">Esc</button>
     <button onclick="sendKeys(['Ctrl+c'])">^C</button>
     <button onclick="sendKey('y')">y</button>
@@ -99,15 +139,52 @@ body { font-family: -apple-system, system-ui, sans-serif; background: #0a0a0a; c
 </div>
 
 <script>
+const THEMES = ['dark','light','nord','solarized','rose'];
 let ws = null, agents = [], activePane = null, refreshInterval = null;
 
-const saved = localStorage.getItem('herdr_relay_url') || 'wss://carmen-shape-marcus-centuries.trycloudflare.com';
-document.getElementById('relayUrl').value = saved;
+// Settings
+const savedUrl = localStorage.getItem('herdr_relay_url') || '';
+const savedTheme = localStorage.getItem('herdr_theme') || 'dark';
+document.getElementById('relayUrl').value = savedUrl;
+applyTheme(savedTheme);
 
-function connect() {
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  localStorage.setItem('herdr_theme', t);
+  renderThemeGrid();
+}
+function renderThemeGrid() {
+  const cur = localStorage.getItem('herdr_theme') || 'dark';
+  document.getElementById('themeGrid').innerHTML = THEMES.map(t =>
+    `<button class="theme-btn ${t===cur?'active':''}" onclick="applyTheme('${t}')">${t}</button>`
+  ).join('');
+}
+renderThemeGrid();
+
+function toggleSettings() {
+  const s = document.getElementById('settingsView');
+  const show = s.style.display !== 'block';
+  s.style.display = show ? 'block' : 'none';
+  document.getElementById('agentListView').style.display = show ? 'none' : '';
+  if (show) {
+    document.getElementById('settingsStatus').innerHTML = ws && ws.readyState === 1
+      ? `<span style="color:var(--green)">● Connected</span> · ${agents.length} agents`
+      : `<span style="color:var(--red)">● Disconnected</span>`;
+  }
+}
+
+function saveAndConnect() {
   const url = document.getElementById('relayUrl').value.trim();
   if (!url) return;
   localStorage.setItem('herdr_relay_url', url);
+  connect();
+  toggleSettings();
+}
+
+// Connection
+function connect() {
+  const url = localStorage.getItem('herdr_relay_url');
+  if (!url) { showSetup(); return; }
   if (ws) ws.close();
   setStatus('connecting');
   ws = new WebSocket(url);
@@ -118,15 +195,25 @@ function connect() {
 }
 
 function setStatus(s) {
-  document.getElementById('statusDot').className = 'dot ' + (s==='connected'?'green':s==='connecting'?'orange':'red');
+  const dot = document.getElementById('statusDot');
+  dot.style.background = s==='connected'?'var(--green)':s==='connecting'?'var(--orange)':'var(--red)';
+}
+
+function showSetup() {
+  document.getElementById('agents').innerHTML = `<div class="empty">
+    <p style="font-size:1.5rem;margin-bottom:12px">🐑</p>
+    <p><strong>Welcome to herdr-remote</strong></p>
+    <p style="margin-top:8px">Tap ⚙ to enter your relay URL</p>
+    <p style="margin-top:12px;font-size:0.7rem;color:var(--muted)">Need a URL? Run on your Mac:<br><code>cloudflared tunnel --url http://localhost:8375</code></p>
+  </div>`;
 }
 
 function handleMessage(msg) {
   if (msg.type === 'agents') { agents = msg.agents; render(); }
   else if (msg.type === 'blocked') {
     const a = agents.find(x => x.pane_id === msg.pane_id);
-    if (a) { a.status = 'blocked'; a.prompt = msg.prompt; a.options = msg.options; }
-    else agents.push({...msg, status: 'blocked'});
+    if (a) { a.status='blocked'; a.prompt=msg.prompt; a.options=msg.options; }
+    else agents.push({...msg, status:'blocked'});
     render();
   } else if (msg.type === 'pane_content' && msg.pane_id === activePane) {
     document.getElementById('termContent').textContent = msg.content || '(empty)';
@@ -135,97 +222,66 @@ function handleMessage(msg) {
 }
 
 function render() {
-  const blocked = agents.filter(a => a.status === 'blocked');
-  const working = agents.filter(a => a.status === 'working');
-  const idle = agents.filter(a => a.status === 'idle' || a.status === 'unknown');
-  document.getElementById('agentCount').textContent = `${agents.length} agents`;
+  const blocked = agents.filter(a => a.status==='blocked');
+  const working = agents.filter(a => a.status==='working');
+  const idle = agents.filter(a => a.status==='idle'||a.status==='unknown');
+  document.getElementById('agentCount').textContent = agents.length ? `${agents.length}` : '';
   let html = '';
-  if (blocked.length) html += section('Blocked', '#ef4444', blocked);
-  if (working.length) html += section('Working', '#22c55e', working);
-  if (idle.length) html += section('Idle', '#888', idle);
-  if (!agents.length) html = '<div style="text-align:center;color:#666;padding:60px 20px">No agents</div>';
+  if (blocked.length) html += section('Blocked', 'var(--red)', blocked);
+  if (working.length) html += section('Working', 'var(--green)', working);
+  if (idle.length) html += section('Idle', 'var(--muted)', idle);
+  if (!agents.length) html = '<div class="empty">Waiting for agents…</div>';
   document.getElementById('agents').innerHTML = html;
 }
 
 function section(title, color, list) {
   return `<div class="section-header"><span class="dot" style="background:${color}"></span>${title}</div>` +
     list.map(a => {
-      const host = a.host && a.host !== 'local' ? ` <span style="color:#f97316;font-size:0.6rem">@${a.host}</span>` : '';
+      const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${a.host}</span>`:'';
       return `<div class="agent" onclick="openTerminal('${a.pane_id}')">
         <span class="dot" style="background:${color}"></span>
-        <div class="info"><div class="project">${a.project || a.agent}${host}</div><div class="meta">${a.agent} · ${a.status}</div></div>
+        <div class="info"><div class="project">${a.project||a.agent}${host}</div><div class="meta">${a.agent} · ${a.status}</div></div>
       </div>`;
     }).join('');
 }
 
 function openTerminal(paneId) {
   activePane = paneId;
-  const a = agents.find(x => x.pane_id === paneId);
-  document.getElementById('termTitle').textContent = a ? `${a.project} · ${a.agent}` : paneId;
+  const a = agents.find(x => x.pane_id===paneId);
+  document.getElementById('termTitle').textContent = a?`${a.project} · ${a.agent}`:paneId;
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('terminalView').classList.add('active');
-  document.getElementById('connectBar').style.display = 'none';
-
-  // Show quick actions if blocked
   const qa = document.getElementById('quickActions');
-  if (a && a.status === 'blocked') {
-    const opts = a.options || ['yes, single permission', 'trust, always allow', 'no (tab to edit)'];
+  if (a&&a.status==='blocked') {
+    const opts = a.options||['yes, single permission','trust, always allow','no (tab to edit)'];
     qa.innerHTML = opts.map(o => {
       const cls = o.includes('yes')||o.includes('approve')?'btn-yes':o.includes('trust')?'btn-trust':'btn-no';
       return `<button class="${cls}" onclick="respond('${o.replace(/'/g,"\\'")}')">${o.split(',')[0]}</button>`;
     }).join('');
-  } else { qa.innerHTML = ''; }
-
+  } else qa.innerHTML='';
   refreshPane();
   refreshInterval = setInterval(refreshPane, 3000);
-  document.getElementById('termInput').focus();
 }
 
 function closeTerminal() {
-  activePane = null;
-  clearInterval(refreshInterval);
+  activePane = null; clearInterval(refreshInterval);
   document.getElementById('terminalView').classList.remove('active');
   document.getElementById('agentListView').style.display = '';
-  document.getElementById('connectBar').style.display = '';
 }
 
-function refreshPane() {
-  if (!ws || !activePane) return;
-  ws.send(JSON.stringify({ type: 'read_pane', pane_id: activePane, lines: 40 }));
-}
-
+function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_pane',pane_id:activePane,lines:50})); }
 function sendText() {
-  const input = document.getElementById('termInput');
-  if (!input.value || !ws || !activePane) return;
-  ws.send(JSON.stringify({ type: 'send_text', pane_id: activePane, text: input.value + '\n' }));
-  input.value = '';
-  setTimeout(refreshPane, 500);
+  const i=document.getElementById('termInput');
+  if(!i.value||!ws||!activePane)return;
+  ws.send(JSON.stringify({type:'send_text',pane_id:activePane,text:i.value+'\n'}));
+  i.value=''; setTimeout(refreshPane,500);
 }
+function sendKey(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:[k]}));setTimeout(refreshPane,300);}
+function sendKeys(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:k}));setTimeout(refreshPane,300);}
+function respond(t){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'respond',pane_id:activePane,text:t}));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
+document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendText();}});
 
-function sendKey(key) {
-  if (!ws || !activePane) return;
-  ws.send(JSON.stringify({ type: 'send_keys', pane_id: activePane, keys: [key] }));
-  setTimeout(refreshPane, 300);
-}
-
-function sendKeys(keys) {
-  if (!ws || !activePane) return;
-  ws.send(JSON.stringify({ type: 'send_keys', pane_id: activePane, keys }));
-  setTimeout(refreshPane, 300);
-}
-
-function respond(text) {
-  if (!ws || !activePane) return;
-  ws.send(JSON.stringify({ type: 'respond', pane_id: activePane, text }));
-  document.getElementById('quickActions').innerHTML = '';
-  setTimeout(refreshPane, 500);
-}
-
-document.getElementById('termInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); sendText(); }
-});
-
-setTimeout(connect, 100);
+if (savedUrl) setTimeout(connect, 100); else showSetup();
 </script>
 </body>
 </html>
