@@ -204,12 +204,29 @@ async def handle_client(ws):
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            if msg.get("type") == "respond":
+            msg_type = msg.get("type")
+            if msg_type == "respond":
                 pane_id = msg["pane_id"]
                 remote = pane_remote_map.get(pane_id)
                 run_herdr("pane", "send-text", pane_id, msg["text"] + "\n", remote=remote)
-            elif msg.get("type") == "agent_event":
+            elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
+            elif msg_type == "read_pane":
+                pane_id = msg["pane_id"]
+                lines = msg.get("lines", "30")
+                remote = pane_remote_map.get(pane_id)
+                content = run_herdr("pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
+                await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "content": content}))
+            elif msg_type == "send_keys":
+                pane_id = msg["pane_id"]
+                keys = msg.get("keys", [])
+                remote = pane_remote_map.get(pane_id)
+                run_herdr("pane", "send-keys", pane_id, *keys, remote=remote)
+            elif msg_type == "send_text":
+                pane_id = msg["pane_id"]
+                text = msg.get("text", "")
+                remote = pane_remote_map.get(pane_id)
+                run_herdr("pane", "send-text", pane_id, text, remote=remote)
     finally:
         clients.discard(ws)
 
