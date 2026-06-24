@@ -10,6 +10,7 @@ except ImportError:
 HERDR = os.environ.get("HERDR_BIN", "/opt/homebrew/bin/herdr")
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = 2
+AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Optional: shared secret for relay auth
 
 # Remote hosts: comma-separated SSH targets
 REMOTES = [r.strip() for r in os.environ.get("HERDR_REMOTES", "").split(",") if r.strip()]
@@ -160,6 +161,22 @@ async def process_request(connection, request):
     """Handle HTTP POST on the same port as WebSocket."""
     from websockets.http11 import Response
     from websockets.datastructures import Headers
+
+    # Token auth (if configured)
+    if AUTH_TOKEN:
+        token = None
+        for key, value in request.headers.raw_items():
+            if key.lower() == "authorization":
+                token = value.replace("Bearer ", "")
+        # Also check query param ?token=
+        if not token and "token=" in (request.path or ""):
+            import urllib.parse
+            _, qs = request.path.split("?", 1) if "?" in request.path else (request.path, "")
+            params = urllib.parse.parse_qs(qs)
+            token = params.get("token", [None])[0]
+        if token != AUTH_TOKEN:
+            headers = Headers([("Content-Type", "text/plain")])
+            return Response(401, "Unauthorized", headers, b"Invalid token\n")
 
     # Check if this is a WebSocket upgrade
     upgrade = None

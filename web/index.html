@@ -95,8 +95,10 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   <div class="setting-group">
     <label>Relay URL</label>
     <input id="relayUrl" type="url" placeholder="wss://your-tunnel.trycloudflare.com" />
+    <label style="margin-top:8px">Token (optional)</label>
+    <input id="relayToken" type="password" placeholder="shared secret" />
     <button onclick="saveAndConnect()">Connect</button>
-    <div class="hint">Run <code>cloudflared tunnel --url http://localhost:8375</code> to get a URL. <a href="https://github.com/dcolinmorgan/herdr-remote/blob/main/QUICKSTART.md" style="color:var(--blue)">Setup guide →</a></div>
+    <div class="hint">Run <code>./relay/start.sh</code> to get a URL. <a href="https://github.com/dcolinmorgan/herdr-remote/blob/main/QUICKSTART.md" style="color:var(--blue)">Setup guide →</a></div>
   </div>
   <div class="setting-group">
     <label>Theme</label>
@@ -145,7 +147,9 @@ let ws = null, agents = [], activePane = null, refreshInterval = null;
 // Settings
 const savedUrl = localStorage.getItem('herdr_relay_url') || '';
 const savedTheme = localStorage.getItem('herdr_theme') || 'dark';
+const savedToken = localStorage.getItem('herdr_relay_token') || '';
 document.getElementById('relayUrl').value = savedUrl;
+document.getElementById('relayToken').value = savedToken;
 applyTheme(savedTheme);
 
 function applyTheme(t) {
@@ -177,17 +181,24 @@ function saveAndConnect() {
   const url = document.getElementById('relayUrl').value.trim();
   if (!url) return;
   localStorage.setItem('herdr_relay_url', url);
+  const token = document.getElementById('relayToken').value.trim();
+  if (token) localStorage.setItem('herdr_relay_token', token);
+  else localStorage.removeItem('herdr_relay_token');
   connect();
   toggleSettings();
 }
 
 // Connection
 function connect() {
-  const url = localStorage.getItem('herdr_relay_url');
+  let url = localStorage.getItem('herdr_relay_url');
   if (!url) { showSetup(); return; }
   if (ws) ws.close();
   setStatus('connecting');
-  ws = new WebSocket(url);
+  // Append token as query param if stored separately
+  const token = localStorage.getItem('herdr_relay_token');
+  let wsUrl = url;
+  if (token) wsUrl += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+  ws = new WebSocket(wsUrl);
   ws.onopen = () => setStatus('connected');
   ws.onclose = () => { setStatus('disconnected'); setTimeout(connect, 3000); };
   ws.onerror = () => setStatus('disconnected');
@@ -273,7 +284,8 @@ function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_p
 function sendText() {
   const i=document.getElementById('termInput');
   if(!i.value||!ws||!activePane)return;
-  ws.send(JSON.stringify({type:'send_text',pane_id:activePane,text:i.value+'\n'}));
+  ws.send(JSON.stringify({type:'send_text',pane_id:activePane,text:i.value}));
+  ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:['Enter']}));
   i.value=''; setTimeout(refreshPane,500);
 }
 function sendKey(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:[k]}));setTimeout(refreshPane,300);}
