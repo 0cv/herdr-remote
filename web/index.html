@@ -89,6 +89,20 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .arrow-popup .empty { visibility: hidden; }
 
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 0.85rem; }
+
+/* Desktop */
+@media (min-width: 768px) {
+  body { max-width: 1200px; margin: 0 auto; }
+  .terminal-view { position: static; display: none; }
+  .terminal-view.active { display: flex; }
+  .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+  .section-header { grid-column: 1 / -1; }
+  .term-content { min-height: 400px; max-height: 60vh; }
+}
+@media (pointer: fine) {
+  .term-keys { display: none; }
+  .quick-actions button { flex: none; min-width: auto; padding: 8px 18px; }
+}
 </style>
 </head>
 <body>
