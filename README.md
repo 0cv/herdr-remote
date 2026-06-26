@@ -2,7 +2,7 @@
 
 Monitor and approve [herdr](https://herdr.dev) agents from your phone, menu bar, or Telegram — no SSH required.
 
-**[▶ Try the live demo](https://herdr-remote.pages.dev)** — no install, works on any phone
+**[Try the live demo](https://herdr-remote.pages.dev)** — no install, works on any phone
 
 ```
 herdr plugin install dcolinmorgan/herdr-push
@@ -12,13 +12,13 @@ herdr plugin install dcolinmorgan/herdr-push
 
 ## Features
 
-- 📱 **Web app** — approve blocked agents from your phone with one tap
-- 🖥️ **macOS menu bar app** — see agent status at a glance, approve from desktop
-- 💬 **Telegram bot** — approve from your watch/phone via inline buttons
-- 🖲️ **Terminal TUI** — kanban dashboard in a herdr pane
-- 🎨 **11 themes** — dark, herdr, light, sand, clay, dune, nord, rose, dracula, kanagawa, midnight
-- 🔑 **Token auth** — shared secret protects your relay
-- 🔌 **Zero-dep plugin** — `herdr-push` uses only `curl`, nothing to install
+- **Web app** — approve blocked agents from your phone with one tap
+- **macOS menu bar app** — see agent status at a glance, approve from desktop
+- **Telegram bot** — approve from your watch/phone via inline buttons
+- **Terminal TUI** — kanban dashboard in a herdr pane
+- **11 themes** — dark, herdr, light, sand, clay, dune, nord, rose, dracula, kanagawa, midnight
+- **Token auth** — shared secret protects your relay
+- **Zero-dep plugin** — `herdr-push` uses only `curl`, nothing to install
 
 ## Screenshots
 
