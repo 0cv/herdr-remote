@@ -213,10 +213,21 @@ function setStatus(s) {
 function showSetup() {
   document.getElementById('agents').innerHTML = `<div class="empty">
     <p style="font-size:1.5rem;margin-bottom:12px">🐑</p>
-    <p><strong>Welcome to herdr-remote</strong></p>
-    <p style="margin-top:8px">Tap ⚙ to enter your relay URL</p>
-    <p style="margin-top:12px;font-size:0.7rem;color:var(--muted)">Need a URL? Run on your Mac:<br><code>cloudflared tunnel --url http://localhost:8375</code></p>
+    <p><strong>herdr-remote</strong></p>
+    <p style="margin-top:8px">Monitor & approve agents from your phone</p>
+    <p style="margin-top:16px"><button onclick="tryDemo()" style="padding:10px 20px;border-radius:8px;border:none;background:var(--blue);color:#fff;font-weight:600;font-size:0.85rem;cursor:pointer">Try Demo</button></p>
+    <p style="margin-top:16px;font-size:0.75rem;color:var(--muted);text-align:left;max-width:280px;margin-left:auto;margin-right:auto">
+      <strong>Connect your own:</strong><br>
+      1. Run: <code style="font-size:0.7rem">cd relay && ./start.sh</code><br>
+      2. Tap ⚙ → paste the wss:// URL<br>
+    </p>
   </div>`;
+}
+function tryDemo() {
+  localStorage.setItem('herdr_relay_url', 'wss://herdr-remote-demo.yyrzrh5wfg.workers.dev');
+  localStorage.removeItem('herdr_relay_token');
+  document.getElementById('relayUrl').value = 'wss://herdr-remote-demo.yyrzrh5wfg.workers.dev';
+  connect();
 }
 
 function handleMessage(msg) {
