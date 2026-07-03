@@ -49,12 +49,6 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
-    <key>NSLocalNetworkUsageDescription</key>
-    <string>Herdi discovers the relay daemon on your local network.</string>
-    <key>NSBonjourServices</key>
-    <array>
-        <string>_herdi._tcp</string>
-    </array>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

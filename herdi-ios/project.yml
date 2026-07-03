@@ -25,9 +25,7 @@ targets:
       properties:
         CFBundleDisplayName: Herdi
         UILaunchScreen: {}
-        NSLocalNetworkUsageDescription: "Herdi discovers the relay daemon on your local network."
-        NSBonjourServices:
-          - _herdi._tcp
+        NSLocalNetworkUsageDescription: "Herdi connects to your relay on the local network."
         NSSupportsLiveActivities: true
     entitlements:
       path: Sources/Herdi.entitlements

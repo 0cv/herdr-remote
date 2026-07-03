@@ -19,20 +19,17 @@ final class RelayConnection {
     var isConnected: Bool { connectionState == .connected }
 
     private var task: URLSessionWebSocketTask?
-    private var browser: NWBrowser?
     private var pathMonitor: NWPathMonitor?
     private let session = URLSession(configuration: .default)
     private var reconnectAttempt = 0
     private var reconnectTask: Task<Void, Never>?
 
     init() {
-        startBrowsing()
         startPathMonitor()
     }
 
     deinit {
         pathMonitor?.cancel()
-        browser?.cancel()
     }
 
     // MARK: - Network Path Monitor
@@ -48,37 +45,6 @@ final class RelayConnection {
             }
         }
         pathMonitor?.start(queue: .global(qos: .utility))
-    }
-
-    // MARK: - Bonjour Discovery
-
-    func startBrowsing() {
-        let params = NWParameters()
-        params.includePeerToPeer = true
-        browser = NWBrowser(for: .bonjour(type: "_herdi._tcp", domain: nil), using: params)
-        browser?.browseResultsChangedHandler = { [weak self] results, _ in
-            guard let result = results.first else { return }
-            if case let .service(name, type, domain, _) = result.endpoint {
-                self?.resolve(name: name, type: type, domain: domain)
-            }
-        }
-        browser?.start(queue: .main)
-    }
-
-    private func resolve(name: String, type: String, domain: String) {
-        let connection = NWConnection(to: .service(name: name, type: type, domain: domain, interface: nil), using: .tcp)
-        connection.stateUpdateHandler = { [weak self] state in
-            if case .ready = state,
-               let endpoint = connection.currentPath?.remoteEndpoint,
-               case let .hostPort(host, port) = endpoint {
-                let addr = "\(host)".replacingOccurrences(of: "%.*", with: "", options: .regularExpression)
-                DispatchQueue.main.async {
-                    self?.connect(to: "ws://\(addr):\(port)")
-                }
-                connection.cancel()
-            }
-        }
-        connection.start(queue: .global())
     }
 
     // MARK: - WebSocket

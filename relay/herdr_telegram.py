@@ -12,8 +12,10 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Mess
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("herdr-remote-tg")
 
-TOKEN = os.environ["HERDI_TG_TOKEN"]
-CHAT_ID = os.environ.get("HERDI_TG_CHAT_ID")  # restrict to your user
+TOKEN = os.environ.get("HERDR_TG_TOKEN") or os.environ.get("HERDI_TG_TOKEN")
+if not TOKEN:
+    raise RuntimeError("Set HERDR_TG_TOKEN to your Telegram bot token.")
+CHAT_ID = os.environ.get("HERDR_TG_CHAT_ID") or os.environ.get("HERDI_TG_CHAT_ID")  # restrict to your user
 RELAY_WS = os.environ.get("HERDR_RELAY", "ws://127.0.0.1:8375")
 
 # Store pane_id per message for callback routing
@@ -36,7 +38,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "herdr-remote telegram bot active.\n"
         f"Chat ID: `{update.effective_chat.id}`\n"
-        "Set HERDI_TG_CHAT_ID to this value.",
+        "Set HERDR_TG_CHAT_ID to this value.",
         parse_mode="Markdown"
     )
 

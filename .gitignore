@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 .swiftpm/
 .venv/
+.env
+relay/.env
+.wrangler/

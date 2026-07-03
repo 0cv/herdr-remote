@@ -67,7 +67,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .term-header .back { background: none; border: none; color: var(--blue); font-size: 1.4rem; cursor: pointer; padding: 4px 8px; }
 .term-header .title { flex: 1; font-size: 0.8rem; font-weight: 500; }
 .term-header .refresh-btn { background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
-.term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: #000; font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; color: #ccc; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: #000; font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: #ccc; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .quick-actions { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
 .quick-actions button { padding: 10px 14px; border-radius: 8px; border: none; font-size: 0.75rem; font-weight: 600; cursor: pointer; flex: 1; min-width: 70px; }
 .btn-yes { background: var(--green); color: #000; } .btn-trust { background: var(--blue); color: #fff; } .btn-no { background: var(--red); color: #fff; }
@@ -170,7 +170,14 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 
 <script>
 const THEMES = ['dark','light','nord','solarized','rose'];
-let ws = null, agents = [], activePane = null, refreshInterval = null;
+const TERMINAL_HISTORY_LINES = 500;
+const ANSI_COLORS = {
+  30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
+  34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
+  90: '#777', 91: '#ff8080', 92: '#80ff80', 93: '#ffff80',
+  94: '#80bfff', 95: '#ff80ff', 96: '#80ffff', 97: '#fff'
+};
+let ws = null, agents = [], activePane = null, refreshInterval = null, lastAgentsSignature = '', currentView = 'agents', viewIndex = 0;
 
 // Settings
 const savedUrl = localStorage.getItem('herdr_relay_url') || '';
@@ -194,15 +201,72 @@ function renderThemeGrid() {
 renderThemeGrid();
 
 function toggleSettings() {
-  const s = document.getElementById('settingsView');
-  const show = s.style.display !== 'block';
-  s.style.display = show ? 'block' : 'none';
-  document.getElementById('agentListView').style.display = show ? 'none' : '';
-  if (show) {
-    document.getElementById('settingsStatus').innerHTML = ws && ws.readyState === 1
-      ? `<span style="color:var(--green)">● Connected</span> · ${agents.length} agents`
-      : `<span style="color:var(--red)">● Disconnected</span>`;
+  if (currentView === 'settings') closeCurrentView();
+  else navigateTo({view: 'settings'});
+}
+
+function updateSettingsStatus() {
+  document.getElementById('settingsStatus').innerHTML = ws && ws.readyState === 1
+    ? `<span style="color:var(--green)">● Connected</span> · ${agents.length} agents`
+    : `<span style="color:var(--red)">● Disconnected</span>`;
+}
+
+function viewUrl(state) {
+  if (state.view === 'settings') return '#settings';
+  if (state.view === 'terminal') return `#pane=${encodeURIComponent(state.paneId)}`;
+  return location.pathname + location.search;
+}
+
+function navigateTo(state) {
+  viewIndex += 1;
+  history.pushState({herdrView: true, index: viewIndex, ...state}, '', viewUrl(state));
+  applyView(state);
+}
+
+function replaceView(state) {
+  history.replaceState({herdrView: true, index: viewIndex, ...state}, '', viewUrl(state));
+  applyView(state);
+}
+
+function closeCurrentView() {
+  if (currentView === 'agents') return;
+  if (viewIndex > 0 && history.state && history.state.herdrView && history.state.view === currentView) {
+    history.back();
+  } else {
+    replaceView({view: 'agents'});
   }
+}
+
+function applyView(state) {
+  if (state.view === 'settings') showSettingsView();
+  else if (state.view === 'terminal' && state.paneId) showTerminalView(state.paneId);
+  else showAgentListView();
+}
+
+function showAgentListView() {
+  currentView = 'agents';
+  activePane = null;
+  clearInterval(refreshInterval);
+  document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('terminalView').classList.remove('active');
+  document.getElementById('agentListView').style.display = '';
+}
+
+function showSettingsView() {
+  currentView = 'settings';
+  activePane = null;
+  clearInterval(refreshInterval);
+  document.getElementById('terminalView').classList.remove('active');
+  document.getElementById('agentListView').style.display = 'none';
+  document.getElementById('settingsView').style.display = 'block';
+  updateSettingsStatus();
+}
+
+function stateFromLocation() {
+  if (location.hash === '#settings') return {view: 'settings'};
+  const paneMatch = location.hash.match(/^#pane=(.+)$/);
+  if (paneMatch) return {view: 'terminal', paneId: decodeURIComponent(paneMatch[1])};
+  return {view: 'agents'};
 }
 
 function saveAndConnect() {
@@ -213,7 +277,7 @@ function saveAndConnect() {
   if (token) localStorage.setItem('herdr_relay_token', token);
   else localStorage.removeItem('herdr_relay_token');
   connect();
-  toggleSettings();
+  closeCurrentView();
 }
 
 // Connection
@@ -227,7 +291,7 @@ function connect() {
   let wsUrl = url;
   if (token) wsUrl += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
   ws = new WebSocket(wsUrl);
-  ws.onopen = () => setStatus('connected');
+  ws.onopen = () => { setStatus('connected'); if (activePane) refreshPane(); };
   ws.onclose = () => { setStatus('disconnected'); setTimeout(connect, 3000); };
   ws.onerror = () => setStatus('disconnected');
   ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
@@ -243,7 +307,6 @@ function showSetup() {
     <p style="font-size:1.5rem;margin-bottom:12px">🐑</p>
     <p><strong>herdr-remote</strong></p>
     <p style="margin-top:8px">Monitor & approve agents from your phone</p>
-    <p style="margin-top:16px"><button onclick="tryDemo()" style="padding:10px 20px;border-radius:8px;border:none;background:var(--blue);color:#fff;font-weight:600;font-size:0.85rem;cursor:pointer">Try Demo</button></p>
     <p style="margin-top:16px;font-size:0.75rem;color:var(--muted);text-align:left;max-width:280px;margin-left:auto;margin-right:auto">
       <strong>Connect your own:</strong><br>
       1. Run: <code style="font-size:0.7rem">cd relay && ./start.sh</code><br>
@@ -251,27 +314,107 @@ function showSetup() {
     </p>
   </div>`;
 }
-function tryDemo() {
-  localStorage.setItem('herdr_relay_url', 'wss://herdr-remote-demo.yyrzrh5wfg.workers.dev');
-  localStorage.removeItem('herdr_relay_token');
-  document.getElementById('relayUrl').value = 'wss://herdr-remote-demo.yyrzrh5wfg.workers.dev';
-  connect();
-}
 
 function handleMessage(msg) {
-  if (msg.type === 'agents') { agents = msg.agents; render(); }
+  if (msg.type === 'agents') {
+    const nextAgents = mergeAgentList(msg.agents || []);
+    const nextSignature = agentsSignature(nextAgents);
+    agents = nextAgents;
+    if (nextSignature !== lastAgentsSignature) {
+      lastAgentsSignature = nextSignature;
+      render();
+    }
+  }
   else if (msg.type === 'blocked') {
     const a = agents.find(x => x.pane_id === msg.pane_id);
     if (a) { a.status='blocked'; a.prompt=msg.prompt; a.options=msg.options; }
     else agents.push({...msg, status:'blocked'});
+    lastAgentsSignature = agentsSignature(agents);
     render();
   } else if (msg.type === 'pane_content' && msg.pane_id === activePane) {
-    document.getElementById('termContent').textContent = msg.content || '(empty)';
-    document.getElementById('termContent').scrollTop = 99999;
+    updateTerminalContent(msg.content || '(empty)', msg.format);
   }
 }
 
+function mergeAgentList(nextAgents) {
+  const previousById = new Map(agents.map(a => [a.pane_id, a]));
+  return nextAgents.map(next => {
+    const previous = previousById.get(next.pane_id);
+    if (!previous || next.status !== 'blocked') return next;
+    return {...next, prompt: previous.prompt, options: previous.options};
+  });
+}
+
+function agentsSignature(list) {
+  return JSON.stringify(list.map(a => [
+    a.pane_id, a.agent, a.status, a.project, a.cwd, a.host,
+    a.prompt, a.options
+  ]));
+}
+
+function updateTerminalContent(content, format) {
+  const term = document.getElementById('termContent');
+  const distanceFromBottom = term.scrollHeight - term.scrollTop - term.clientHeight;
+  const shouldStickToBottom = distanceFromBottom < 48;
+  const previousScrollTop = term.scrollTop;
+  if (format === 'ansi') term.innerHTML = ansiToHtml(content);
+  else term.textContent = content;
+  term.scrollTop = shouldStickToBottom ? term.scrollHeight : previousScrollTop;
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function ansiToHtml(text) {
+  let html = '', open = false, styles = {};
+  const parts = text.split(/\x1b\[([0-9;]*)m/g);
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      html += escapeHtml(parts[i]);
+      continue;
+    }
+    if (open) {
+      html += '</span>';
+      open = false;
+    }
+    const codes = parts[i] ? parts[i].split(';').map(Number) : [0];
+    if (codes.includes(0)) styles = {};
+    for (let j = 0; j < codes.length; j++) {
+      const code = codes[j];
+      if (code === 1) styles.fontWeight = '700';
+      else if (code === 2) styles.opacity = '0.7';
+      else if (code === 3) styles.fontStyle = 'italic';
+      else if (code === 4) styles.textDecoration = 'underline';
+      else if (code === 22) delete styles.fontWeight;
+      else if (code === 23) delete styles.fontStyle;
+      else if (code === 24) delete styles.textDecoration;
+      else if (code === 39) delete styles.color;
+      else if (code === 49) delete styles.backgroundColor;
+      else if ((code === 38 || code === 48) && codes[j + 1] === 2 && codes.length > j + 4) {
+        const color = `rgb(${codes[j + 2]},${codes[j + 3]},${codes[j + 4]})`;
+        if (code === 38) styles.color = color;
+        else styles.backgroundColor = color;
+        j += 4;
+      }
+      else if (ANSI_COLORS[code]) styles.color = ANSI_COLORS[code];
+      else if (ANSI_COLORS[code - 10]) styles.backgroundColor = ANSI_COLORS[code - 10];
+    }
+    const style = Object.entries(styles).map(([k,v]) => `${k}:${v}`).join(';');
+    if (style) {
+      html += `<span style="${style}">`;
+      open = true;
+    }
+  }
+  if (open) html += '</span>';
+  return html;
+}
+
 function render() {
+  const listView = document.getElementById('agentListView');
+  const previousScrollTop = listView.scrollTop;
   const blocked = agents.filter(a => a.status==='blocked');
   const working = agents.filter(a => a.status==='working');
   const idle = agents.filter(a => a.status==='idle'||a.status==='unknown');
@@ -282,6 +425,7 @@ function render() {
   if (idle.length) html += section('Idle', 'var(--muted)', idle);
   if (!agents.length) html = '<div class="empty">Waiting for agents…</div>';
   document.getElementById('agents').innerHTML = html;
+  listView.scrollTop = previousScrollTop;
 }
 
 function section(title, color, list) {
@@ -296,9 +440,16 @@ function section(title, color, list) {
 }
 
 function openTerminal(paneId) {
+  navigateTo({view: 'terminal', paneId});
+}
+
+function showTerminalView(paneId) {
   activePane = paneId;
+  currentView = 'terminal';
+  clearInterval(refreshInterval);
   const a = agents.find(x => x.pane_id===paneId);
   document.getElementById('termTitle').textContent = a?`${a.project} · ${a.agent}`:paneId;
+  document.getElementById('settingsView').style.display = 'none';
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('terminalView').classList.add('active');
   const qa = document.getElementById('quickActions');
@@ -320,12 +471,10 @@ function openTerminal(paneId) {
 }
 
 function closeTerminal() {
-  activePane = null; clearInterval(refreshInterval);
-  document.getElementById('terminalView').classList.remove('active');
-  document.getElementById('agentListView').style.display = '';
+  closeCurrentView();
 }
 
-function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_pane',pane_id:activePane,lines:50})); }
+function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_pane',pane_id:activePane,lines:TERMINAL_HISTORY_LINES,format:'ansi'})); }
 function sendText() {
   const i=document.getElementById('termInput');
   if(!i.value||!ws||!activePane)return;
@@ -340,6 +489,19 @@ function hideArrows(){document.getElementById('arrowPopup').classList.remove('sh
 function respond(t){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'respond',pane_id:activePane,text:t}));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
 document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendText();}});
 
+window.addEventListener('popstate', event => {
+  const state = event.state && event.state.herdrView ? event.state : {view: 'agents', index: 0};
+  viewIndex = Number.isInteger(state.index) ? state.index : 0;
+  applyView(state);
+});
+
+function initializeView() {
+  const initialState = savedUrl ? stateFromLocation() : {view: 'agents'};
+  replaceView({view: 'agents'});
+  if (initialState.view !== 'agents') navigateTo(initialState);
+}
+
+initializeView();
 if (savedUrl) setTimeout(connect, 100); else showSetup();
 </script>
 </body>

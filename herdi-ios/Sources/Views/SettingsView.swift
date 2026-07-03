@@ -27,18 +27,13 @@ struct SettingsView: View {
                     }
                 }
                 Section("Manual Connect") {
-                    TextField("ws://192.168.1.x:8375", text: $manualHost)
+                    TextField("wss://relay.yourdomain.com", text: $manualHost)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Button("Connect") {
                         relay.connect(to: manualHost)
                     }
                     .disabled(manualHost.isEmpty)
-                }
-                Section("Discovery") {
-                    Button("Scan for relay (Bonjour)") {
-                        relay.startBrowsing()
-                    }
                 }
             }
             .navigationTitle("Settings")

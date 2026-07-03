@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["websockets>=14.0", "zeroconf>=0.80.0"]
+# dependencies = ["websockets>=14.0"]
 # ///
-"""herdr-remote relay — polls herdr, accepts push events (HTTP POST + WebSocket + UDP), broadcasts to clients."""
-import asyncio, json, os, re, signal, socket, subprocess
+"""herdr-remote relay — polls herdr, accepts push events (HTTP GET + WebSocket + UDP), broadcasts to clients."""
+import asyncio, json, os, re, shutil, signal, socket, subprocess
 
 try:
     from websockets.asyncio.server import serve
 except ImportError:
     from websockets.server import serve
 
-HERDR = os.environ.get("HERDR_BIN", "/opt/homebrew/bin/herdr")
+def default_herdr_bin():
+    for candidate in (
+        shutil.which("herdr"),
+        os.path.expanduser("~/.local/bin/herdr"),
+        "/opt/homebrew/bin/herdr",
+        "/usr/local/bin/herdr",
+    ):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return "herdr"
+
+
+HERDR = os.environ.get("HERDR_BIN") or default_herdr_bin()
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = 2
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Optional: shared secret for relay auth
@@ -162,7 +174,7 @@ async def event_push():
 
 
 async def process_request(connection, request):
-    """Handle HTTP POST on the same port as WebSocket."""
+    """Handle WebSocket upgrades and HTTP GET /push?d=... on the same port."""
     from websockets.http11 import Response
     from websockets.datastructures import Headers
 
@@ -194,14 +206,14 @@ async def process_request(connection, request):
     if request.path and "OPTIONS" in str(request.headers):
         headers = Headers([
             ("Access-Control-Allow-Origin", "*"),
-            ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+            ("Access-Control-Allow-Methods", "GET, OPTIONS"),
             ("Access-Control-Allow-Headers", "Content-Type"),
         ])
         return Response(204, "No Content", headers, b"")
 
-    # HTTP POST — parse event from URL query params as fallback
+    # HTTP GET — parse event from URL query params.
     # (since we can't read request body in websockets 16)
-    # Plugins should encode payload in the URL path: POST /push?payload=...
+    # Plugins should encode payload in the URL path: /push?d=...
     import urllib.parse
     if "?" in (request.path or ""):
         _, qs = request.path.split("?", 1)
@@ -235,9 +247,16 @@ async def handle_client(ws):
             elif msg_type == "read_pane":
                 pane_id = msg["pane_id"]
                 lines = msg.get("lines", "30")
+                fmt = "ansi" if msg.get("format") == "ansi" else "text"
                 remote = pane_remote_map.get(pane_id)
-                content = run_herdr("pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
-                await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "content": content}))
+                content = run_herdr(
+                    "pane", "read", pane_id,
+                    "--lines", str(lines),
+                    "--source", "recent",
+                    "--format", fmt,
+                    remote=remote,
+                )
+                await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "content": content, "format": fmt}))
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
                 keys = msg.get("keys", [])
@@ -260,27 +279,7 @@ class UDPPlugin(asyncio.DatagramProtocol):
             pass
 
 
-def start_mdns():
-    try:
-        from zeroconf import Zeroconf, ServiceInfo
-        import socket as sock_mod
-        import threading
-        ip = sock_mod.gethostbyname(sock_mod.gethostname())
-        info = ServiceInfo(
-            "_herdr-remote._tcp.local.", "herdr-remote._herdr-remote._tcp.local.",
-            addresses=[sock_mod.inet_aton(ip)], port=WS_PORT,
-        )
-        zc = Zeroconf()
-        threading.Thread(target=zc.register_service, args=(info,), daemon=True).start()
-        print(f"mDNS registering at {ip}")
-        return zc, info
-    except Exception as e:
-        print(f"mDNS skipped: {e}")
-        return None, None
-
-
 async def main():
-    zc, info = start_mdns()
     loop = asyncio.get_running_loop()
     try:
         await loop.create_datagram_endpoint(UDPPlugin, local_addr=("127.0.0.1", 8376))
@@ -290,16 +289,13 @@ async def main():
     asyncio.create_task(event_push())
     server = await serve(handle_client, "0.0.0.0", WS_PORT, process_request=process_request)
     hosts = ["local"] + REMOTES
-    print(f"herdr-remote relay on :{WS_PORT} (WebSocket + HTTP POST)")
+    print(f"herdr-remote relay on :{WS_PORT} (WebSocket + HTTP GET push)")
     print(f"  polling: {', '.join(hosts)}")
     stop = loop.create_future()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set_result, None)
     await stop
     server.close()
-    if zc and info:
-        zc.unregister_service(info)
-        zc.close()
 
 
 if __name__ == "__main__":

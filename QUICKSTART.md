@@ -1,55 +1,43 @@
 # Quick Start
 
-Get mobile notifications + approval for your herdr agents in 60 seconds.
+Get mobile approval for local herdr agents with a temporary Cloudflare quick tunnel.
 
-## 1. Start the relay (on your Mac)
-
-```bash
-git clone https://github.com/dcolinmorgan/herdr-remote
-cd herdr-remote/relay
-uv run herdr_relay.py
-```
-
-## 2. Expose it (pick one)
+## 1. Start the relay and tunnel
 
 ```bash
-# Cloudflare tunnel (free, instant):
-cloudflared tunnel --url http://localhost:8375
-# → gives you https://something.trycloudflare.com
+./relay/start.sh
 ```
 
-## 3. Install the plugin (on any machine with herdr)
+The script prints:
+
+```text
+Tunnel URL: https://example.trycloudflare.com
+WebSocket:  wss://example.trycloudflare.com
+```
+
+Quick tunnel hostnames are temporary and change when the tunnel restarts.
+
+## 2. Open the web app
+
+Open your deployed copy of `web/` on your phone. In Settings, paste the printed `wss://...trycloudflare.com` URL.
+
+To deploy the web app:
 
 ```bash
-herdr plugin install dcolinmorgan/herdr-push
-export HERDR_RELAY="https://your-tunnel.trycloudflare.com"
-launchctl setenv HERDR_RELAY "$HERDR_RELAY"
-herdr server reload-config
+cp .env.example .env
+# edit WEB_PROJECT in .env
+make web-deploy
 ```
 
-## 4. Monitor
+## 3. Use a stable relay hostname
 
-**Web app** (phone):
-Open [herdr-demo.pages.dev](https://herdr-demo.pages.dev), tap ⚙, paste your tunnel URL.
-
-**Menu bar app** (macOS):
-Download from [Releases](https://github.com/dcolinmorgan/herdr-remote/releases).
-
-**Telegram bot**:
-```bash
-export HERDR_TG_TOKEN="your-token" HERDR_TG_CHAT_ID="your-id"
-uv run herdr_telegram.py
-```
-
-**Terminal TUI**:
-```bash
-uv run herdr_tui.py
-```
-
-## 5. Test
+For a fixed `wss://` URL, create a named Cloudflare tunnel and install the macOS service:
 
 ```bash
-herdr plugin action invoke herdr.push test
+cloudflared tunnel login
+cloudflared tunnel create herdr-remote
+cloudflared tunnel route dns herdr-remote relay.yourdomain.com
+make service-install
 ```
 
-You should see a test agent appear on your dashboard.
+Then use `wss://relay.yourdomain.com` in the web app.

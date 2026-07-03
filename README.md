@@ -1,108 +1,148 @@
 # herdr-remote
 
-Monitor and approve [herdr](https://herdr.dev) agents from your phone, menu bar, or Telegram — no SSH required.
+Monitor and approve [herdr](https://herdr.dev) agents from a phone, menu bar, Telegram, or terminal dashboard.
 
-**[Try the live demo](https://herdr-demo.pages.dev)** — no install, works on any phone
+## Components
 
-```
-herdr plugin install dcolinmorgan/herdr-push
-./relay/start.sh
-# → open herdr-demo.pages.dev on your phone
-```
-
-## Features
-
-- **Web app** — approve blocked agents from your phone with one tap
-- **macOS menu bar app** — see agent status at a glance, approve from desktop
-- **Telegram bot** — approve from your watch/phone via inline buttons
-- **Terminal TUI** — kanban dashboard in a herdr pane
-- **11 themes** — dark, herdr, light, sand, clay, dune, nord, rose, dracula, kanagawa, midnight
-- **Token auth** — shared secret protects your relay
-- **Zero-dep plugin** — `herdr-push` uses only `curl`, nothing to install
-
-## Screenshots
-
-| Agent List | Terminal View |
-|:--:|:--:|
-| ![Agent list with status and icons](landing-ui.jpeg) | ![Terminal interaction from phone](chat-ui.jpeg) |
-
-## Web App
-
-**[herdr-demo.pages.dev](https://herdr-demo.pages.dev)**
-
-- Tap any agent to open a live terminal view
-- Special mobile keyboard: Tab, Esc, ^C, y/n + floating arrow d-pad
-- Agent icons: Kiro, Codex, Claude, Grok, Pi auto-detected
-- Context menu (⋯): open terminal, approve, read output, interrupt
-- Quick-action buttons for blocked agents (yes/trust/no)
-- Browser notifications when agents block
-- Works as PWA — add to Home Screen for app-like experience + Apple Watch notifications
+- **Relay**: local Python process on port `8375`; polls local and optional SSH herdr hosts.
+- **Web app**: static mobile UI in `web/`; connect it to the relay with a `ws://` or `wss://` URL.
+- **Cloudflare tunnel**: exposes the relay without opening inbound ports.
+- **LaunchAgent service**: macOS background service that starts both the relay and a named Cloudflare tunnel.
+- **macOS menu bar app**, **Telegram bot**, and **terminal TUI**: optional clients for the same relay.
 
 ## Quick Start
 
-### 1. Start the relay
+Start a temporary tunnel:
 
 ```bash
-git clone https://github.com/dcolinmorgan/herdr-remote
-cd herdr-remote/relay
-./start.sh
+./relay/start.sh
 ```
 
-Prints a `wss://` tunnel URL. No account needed (free Cloudflare quick tunnel).
+The script starts the relay and prints a temporary Cloudflare quick tunnel URL:
 
-### 2. Open on your phone
+```text
+Tunnel URL: https://example.trycloudflare.com
+WebSocket:  wss://example.trycloudflare.com
+```
 
-Go to [herdr-demo.pages.dev](https://herdr-demo.pages.dev) → tap ⚙ → paste the URL → Connect.
+Open your deployed web app on your phone and enter the printed `wss://...trycloudflare.com` URL in Settings. Quick tunnels are temporary; the hostname changes when the tunnel restarts.
 
-### 3. Monitor remote machines
+## Web App
 
-On any machine running herdr:
+The web app is static and lives in `web/`.
+
+Deploy it anywhere that can host static files. With Cloudflare Pages direct upload:
 
 ```bash
-herdr plugin install dcolinmorgan/herdr-push
-echo "HERDR_RELAY=https://your-tunnel-url" > "$(herdr plugin config-dir herdr.push)/.env"
-herdr plugin action invoke herdr.push test
+cp .env.example .env
+# edit WEB_PROJECT in .env
+make web-deploy
 ```
+
+In the app Settings:
+
+- **Relay URL**: `wss://...`
+- **Token**: value of `HERDR_RELAY_TOKEN` if relay auth is enabled
+
+## Named Tunnel
+
+For a stable relay hostname, create a named Cloudflare tunnel and route a DNS name you control:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create herdr-remote
+cloudflared tunnel route dns herdr-remote relay.yourdomain.com
+```
+
+Create `~/.cloudflared/config-herdr-remote.yml`:
+
+```yaml
+tunnel: herdr-remote
+credentials-file: /Users/you/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: relay.yourdomain.com
+    service: http://localhost:8375
+  - service: http_status:404
+```
+
+Run it manually:
+
+```bash
+make relay-run
+cloudflared tunnel --config ~/.cloudflared/config-herdr-remote.yml run
+```
+
+Then use this in the web app:
+
+```text
+wss://relay.yourdomain.com
+```
+
+## macOS Background Service
+
+For day-to-day use, prefer the LaunchAgent service over two manual terminals. It runs the relay and named Cloudflare tunnel together.
+
+Prerequisite: create `~/.cloudflared/config-herdr-remote.yml` as shown above.
+
+Install and start:
+
+```bash
+make service-install
+```
+
+The installer:
+
+- creates `relay/.env` if it does not exist
+- generates `HERDR_RELAY_TOKEN`
+- writes `~/Library/LaunchAgents/com.herdr-remote.service.plist`
+- starts `relay/herdr-remote-service.sh` through launchd
+
+Useful commands:
+
+```bash
+make web-deploy
+make service-status
+make service-logs
+make service-uninstall
+```
+
+Read the token for the web app:
+
+```bash
+sed -n 's/^HERDR_RELAY_TOKEN=//p' relay/.env
+```
+
+The service starts at login and launchd restarts it if it exits. Cloudflared handles normal sleep and network reconnects. If the laptop is powered off, the relay is unavailable until the Mac boots and the user logs in.
 
 ## Architecture
 
 ```
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│  Web App     │  │  Mac Menu    │  │  Telegram    │
-│  (phone)     │  │  Bar App     │  │  Bot         │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │                  │                  │
-       └───── WebSocket ──┴──────────────────┘
-                   │
-        ┌──────────┴──────────┐
-        │   relay (:8375)     │  ← Cloudflare tunnel
-        │   WS + HTTP POST    │
-        └──────────┬──────────┘
-                   │
-     ┌─────────────┼─────────────┐
-     │ local poll  │ herdr-push  │
-     │ (herdr CLI) │ (HTTP POST) │
-     │             │             │
-  ┌──┴──┐    ┌────┴────┐   ┌────┴────┐
-  │herdr│    │herdr    │   │herdr    │
-  │local│    │remote A │   │remote B │
-  └─────┘    └─────────┘   └─────────┘
+Web app / menu bar / Telegram / TUI
+             │
+         WebSocket
+             │
+ Cloudflare tunnel or localhost
+             │
+       relay (:8375)
+        │        │
+ local herdr   optional SSH hosts
 ```
 
-## Persistent Tunnel (optional)
+## Token Auth
 
-Quick tunnels change URL on restart. For a stable URL:
+Enable relay auth with:
 
 ```bash
-# Create a named tunnel (one-time)
-cloudflared tunnel create herdr-remote
-cloudflared tunnel route dns herdr-remote relay.yourdomain.com
-
-# Run it
-cloudflared tunnel --config ~/.cloudflared/config-herdr-remote.yml run
+export HERDR_RELAY_TOKEN="$(openssl rand -hex 16)"
+make relay-run
 ```
 
-## macOS Menu Bar App
+For the launchd service, set or read the token in `relay/.env`.
+
+## Optional Clients
+
+macOS menu bar app:
 
 ```bash
 cd herdi-mac
@@ -110,9 +150,7 @@ cd herdi-mac
 cp -r dist/Herdi.app /Applications/
 ```
 
-Or download from [Releases](https://github.com/dcolinmorgan/herdr-remote/releases).
-
-## Telegram Bot
+Telegram bot:
 
 ```bash
 export HERDR_TG_TOKEN="your-token"
@@ -120,25 +158,15 @@ export HERDR_TG_CHAT_ID="your-chat-id"
 uv run relay/herdr_telegram.py
 ```
 
-Approve agents from your Apple Watch via Telegram inline buttons.
-
-## Terminal TUI
+Terminal TUI:
 
 ```bash
 uv run relay/herdr_tui.py
 ```
 
-## Token Auth
-
-```bash
-export HERDR_RELAY_TOKEN="$(openssl rand -hex 16)"
-uv run relay/herdr_relay.py
-```
-
-Enter the same token in the web app Settings. Connections without the token are rejected.
-
 ## Requirements
 
-- Python 3.10+ with [uv](https://docs.astral.sh/uv/)
-- `cloudflared` (for remote access)
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/)
+- `cloudflared` for remote access
 - herdr 0.7+

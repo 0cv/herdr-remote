@@ -20,12 +20,8 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_herdi._tcp</string>
-	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Herdi discovers the relay daemon on your local network.</string>
+	<string>Herdi connects to your relay on the local network.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UILaunchScreen</key>

@@ -79,7 +79,7 @@ class ApprovalPanel(Vertical):
             self.post_message(self.Responded(self.agent["pane_id"], event.value.strip()))
 
 
-class Herdr RemoteTUI(App):
+class HerdrRemoteTUI(App):
     CSS = """
     #board { height: 1fr; }
     #approvals { height: auto; max-height: 40%; }
@@ -140,7 +140,7 @@ class Herdr RemoteTUI(App):
                 async with websockets.connect(RELAY_WS) as ws:
                     self._ws = ws
                     self.connected = True
-                    self.mutate_reactive(Herdr RemoteTUI.connected)
+                    self.mutate_reactive(HerdrRemoteTUI.connected)
                     self.recompose()
                     async for raw in ws:
                         try:
@@ -151,7 +151,7 @@ class Herdr RemoteTUI(App):
             except Exception:
                 self._ws = None
                 self.connected = False
-                self.mutate_reactive(Herdr RemoteTUI.connected)
+                self.mutate_reactive(HerdrRemoteTUI.connected)
                 self.recompose()
                 await asyncio.sleep(3)
 
@@ -191,4 +191,4 @@ class Herdr RemoteTUI(App):
 
 
 if __name__ == "__main__":
-    Herdr RemoteTUI().run()
+    HerdrRemoteTUI().run()

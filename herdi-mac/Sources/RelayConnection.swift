@@ -24,13 +24,26 @@ final class RelayConnection {
     var remotes: [String] = [] // SSH targets, e.g. ["user@host"]
 
     init() {
-        herdrPath = ProcessInfo.processInfo.environment["HERDR_BIN"]
-            ?? "/opt/homebrew/bin/herdr"
+        herdrPath = Self.findHerdrPath()
         // Load saved remotes
         if let saved = UserDefaults.standard.stringArray(forKey: "herdi_remotes") {
             remotes = saved
         }
         startDirect()
+    }
+
+    private static func findHerdrPath() -> String {
+        if let path = ProcessInfo.processInfo.environment["HERDR_BIN"], !path.isEmpty {
+            return path
+        }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.local/bin/herdr",
+            "/opt/homebrew/bin/herdr",
+            "/usr/local/bin/herdr",
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/herdr"
     }
 
     // MARK: - Direct Mode (polls herdr CLI)
