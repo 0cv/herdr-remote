@@ -19,7 +19,7 @@ Quick tunnel hostnames are temporary and change when the tunnel restarts.
 
 ## 2. Open the web app
 
-Open your deployed copy of `web/` on your phone. In Settings, paste the printed `wss://...trycloudflare.com` URL.
+Open your deployed copy of `web/` on your phone. In Settings, add the printed `wss://...trycloudflare.com` URL.
 
 To deploy the web app:
 
@@ -41,3 +41,20 @@ make service-install
 ```
 
 Then use `wss://relay.yourdomain.com` in the web app.
+
+## 4. Show two computers on one page
+
+Run one relay and one Cloudflare tunnel per computer. Give each computer a distinct hostname:
+
+```text
+wss://relay-mac.150283.xyz
+wss://relay-fedora.150283.xyz
+```
+
+In the web app Settings, add both relay URLs. The browser connects to both relays directly and merges the agents on one page.
+
+On Fedora/Linux, install `cloudflared`, create `~/.cloudflared/config-herdr-remote.yml`, then run:
+
+```bash
+make linux-service-install
+```

@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["websockets>=14.0"]
 # ///
-"""herdr-remote relay — polls herdr, accepts push events (HTTP GET + WebSocket + UDP), broadcasts to clients."""
+"""herdr-remote relay — polls local herdr and broadcasts to clients."""
 import asyncio, json, os, re, shutil, signal, socket, subprocess
 
 try:
@@ -17,6 +17,8 @@ def default_herdr_bin():
         os.path.expanduser("~/.local/bin/herdr"),
         "/opt/homebrew/bin/herdr",
         "/usr/local/bin/herdr",
+        "/home/linuxbrew/.linuxbrew/bin/herdr",
+        "/home/linuxbrew/.linuxbrew/opt/herdr/bin/herdr",
     ):
         if candidate and os.path.exists(candidate):
             return candidate
@@ -27,9 +29,7 @@ HERDR = os.environ.get("HERDR_BIN") or default_herdr_bin()
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = 2
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Optional: shared secret for relay auth
-
-# Remote hosts: comma-separated SSH targets
-REMOTES = [r.strip() for r in os.environ.get("HERDR_REMOTES", "").split(",") if r.strip()]
+LOCAL_HOST = socket.gethostname().split(".")[0] or "local"
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
@@ -44,52 +44,45 @@ CHROME_RE = re.compile(
 clients = set()
 last_statuses = {}
 event_queue = asyncio.Queue()
-pane_remote_map = {}
 
 
-def run_herdr(*args, remote=None):
+def run_herdr(*args):
     try:
-        if remote:
-            cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", remote, HERDR, *args]
-        else:
-            cmd = [HERDR, *args]
+        cmd = [HERDR, *args]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         return r.stdout.strip()
     except Exception:
         return ""
 
 
-def get_agents_from_host(remote=None):
-    raw = run_herdr("pane", "list", remote=remote)
-    host_label = remote or "local"
+def get_agents():
+    raw = run_herdr("pane", "list")
     try:
         data = json.loads(raw)
         panes = data.get("result", {}).get("panes", [])
-        return [
-            {
-                "pane_id": p["pane_id"],
-                "agent": p.get("agent", ""),
-                "status": p.get("agent_status", "unknown"),
-                "cwd": p.get("cwd", ""),
-                "project": os.path.basename(p.get("cwd", "")),
-                "host": host_label,
-                "remote": remote,
-            }
-            for p in panes if p.get("agent")
-        ]
+        agents = []
+        for p in panes:
+            if not p.get("agent"):
+                continue
+            raw_pane_id = p["pane_id"]
+            agents.append(
+                {
+                    "pane_id": raw_pane_id,
+                    "raw_pane_id": raw_pane_id,
+                    "agent": p.get("agent", ""),
+                    "status": p.get("agent_status", "unknown"),
+                    "cwd": p.get("cwd", ""),
+                    "project": os.path.basename(p.get("cwd", "")),
+                    "host": LOCAL_HOST,
+                }
+            )
+        return agents
     except (json.JSONDecodeError, KeyError):
         return []
 
 
-def get_all_agents():
-    agents = get_agents_from_host(remote=None)
-    for remote in REMOTES:
-        agents.extend(get_agents_from_host(remote=remote))
-    return agents
-
-
-def read_pane(pane_id, remote=None):
-    raw = run_herdr("pane", "read", pane_id, "--lines", "20", "--source", "recent", remote=remote)
+def read_pane(pane_id):
+    raw = run_herdr("pane", "read", pane_id, "--lines", "20", "--source", "recent")
     lines = [l for l in raw.splitlines() if l.strip() and not CHROME_RE.search(l)]
     return "\n".join(lines[-6:])
 
@@ -116,20 +109,18 @@ async def broadcast(msg):
 
 async def poll_loop():
     while True:
-        agents = get_all_agents()
+        agents = get_agents()
+        await broadcast({"type": "agents", "agents": agents})
         if agents:
-            for a in agents:
-                pane_remote_map[a["pane_id"]] = a.get("remote")
-            await broadcast({"type": "agents", "agents": agents})
             for a in agents:
                 pid, status = a["pane_id"], a["status"]
                 if status == "blocked" and last_statuses.get(pid) != "blocked":
-                    content = read_pane(pid, remote=a.get("remote"))
+                    content = read_pane(pid)
                     options = detect_options(content)
                     await broadcast({
                         "type": "blocked", "pane_id": pid,
                         "agent": a["agent"], "project": a["project"],
-                        "host": a.get("host", "local"),
+                        "host": a.get("host", LOCAL_HOST),
                         "prompt": content[:500],
                         "options": options or TOOL_OPTIONS
                     })
@@ -140,19 +131,15 @@ async def poll_loop():
 async def event_push():
     while True:
         event = await event_queue.get()
-        pane_id = event.get("pane_id", "")
+        raw_pane_id = event.get("pane_id", "")
         status = event.get("status", "")
-        host = event.get("host", "local")
+        host = event.get("host", LOCAL_HOST)
 
-        if status == "blocked" and pane_id:
-            remote = pane_remote_map.get(pane_id)
-            if remote or host == "local":
-                content = read_pane(pane_id, remote=remote)
-            else:
-                content = event.get("prompt", "Agent is blocked")
+        if status == "blocked" and raw_pane_id:
+            content = read_pane(raw_pane_id) or event.get("prompt", "Agent is blocked")
             options = detect_options(content)
             await broadcast({
-                "type": "blocked", "pane_id": pane_id,
+                "type": "blocked", "pane_id": raw_pane_id,
                 "agent": event.get("agent", ""),
                 "project": event.get("project", ""),
                 "host": host,
@@ -160,10 +147,11 @@ async def event_push():
                 "options": options or TOOL_OPTIONS
             })
 
-        if pane_id and event.get("type") == "agent_event":
+        if raw_pane_id and event.get("type") == "agent_event":
             await broadcast({
                 "type": "agents", "agents": [{
-                    "pane_id": pane_id,
+                    "pane_id": raw_pane_id,
+                    "raw_pane_id": raw_pane_id,
                     "agent": event.get("agent", ""),
                     "status": status,
                     "cwd": event.get("cwd", ""),
@@ -240,33 +228,28 @@ async def handle_client(ws):
             msg_type = msg.get("type")
             if msg_type == "respond":
                 pane_id = msg["pane_id"]
-                remote = pane_remote_map.get(pane_id)
-                run_herdr("pane", "send-text", pane_id, msg["text"] + "\n", remote=remote)
+                run_herdr("pane", "send-text", pane_id, msg["text"] + "\n")
             elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
                 pane_id = msg["pane_id"]
                 lines = msg.get("lines", "30")
                 fmt = "ansi" if msg.get("format") == "ansi" else "text"
-                remote = pane_remote_map.get(pane_id)
                 content = run_herdr(
                     "pane", "read", pane_id,
                     "--lines", str(lines),
                     "--source", "recent",
                     "--format", fmt,
-                    remote=remote,
                 )
                 await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "content": content, "format": fmt}))
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
                 keys = msg.get("keys", [])
-                remote = pane_remote_map.get(pane_id)
-                run_herdr("pane", "send-keys", pane_id, *keys, remote=remote)
+                run_herdr("pane", "send-keys", pane_id, *keys)
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
                 text = msg.get("text", "")
-                remote = pane_remote_map.get(pane_id)
-                run_herdr("pane", "send-text", pane_id, text, remote=remote)
+                run_herdr("pane", "send-text", pane_id, text)
     finally:
         clients.discard(ws)
 
@@ -288,12 +271,14 @@ async def main():
     asyncio.create_task(poll_loop())
     asyncio.create_task(event_push())
     server = await serve(handle_client, "0.0.0.0", WS_PORT, process_request=process_request)
-    hosts = ["local"] + REMOTES
     print(f"herdr-remote relay on :{WS_PORT} (WebSocket + HTTP GET push)")
-    print(f"  polling: {', '.join(hosts)}")
+    print(f"  polling: {LOCAL_HOST}")
     stop = loop.create_future()
+    def request_stop():
+        if not stop.done():
+            stop.set_result(None)
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set_result, None)
+        loop.add_signal_handler(sig, request_stop)
     await stop
     server.close()
 

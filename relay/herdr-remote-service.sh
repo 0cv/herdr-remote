@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="${HERDR_REMOTE_ENV:-$SCRIPT_DIR/.env}"
+ENV_FILE="${HERDR_RELAY_ENV:-$SCRIPT_DIR/.env}"
 
 if [ -f "$ENV_FILE" ]; then
     set -a
@@ -11,7 +11,7 @@ if [ -f "$ENV_FILE" ]; then
     set +a
 fi
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export HERDR_RELAY_PORT="${HERDR_RELAY_PORT:-8375}"
 
 UV_BIN="${UV_BIN:-$(command -v uv || true)}"

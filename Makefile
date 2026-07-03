@@ -4,8 +4,10 @@ export
 endif
 
 WEB_PROJECT ?= herdr-remote
+PATH := /opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$(HOME)/.local/bin:$(PATH)
+export PATH
 
-.PHONY: help relay-install relay-run relay-plugin service-install service-uninstall service-status service-logs web-deploy web-preview mac-build ios-build
+.PHONY: help relay-install relay-run relay-plugin service-install service-uninstall service-status service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-deploy web-preview mac-build ios-build
 
 help:
 	@echo "Common targets:"
@@ -14,6 +16,10 @@ help:
 	@echo "  make service-status   Show launchd service status"
 	@echo "  make service-logs     Tail relay+tunnel service logs"
 	@echo "  make service-uninstall Stop/remove launchd service"
+	@echo "  make linux-service-install  Install/start systemd user relay+tunnel service"
+	@echo "  make linux-service-status   Show systemd user service status"
+	@echo "  make linux-service-logs     Tail systemd user service logs"
+	@echo "  make linux-service-uninstall Stop/remove systemd user service"
 	@echo "  make relay-run        Run relay in the foreground"
 
 relay-install:
@@ -36,6 +42,18 @@ service-status:
 
 service-logs:
 	tail -f "$$HOME/Library/Logs/herdr-remote/service.log" "$$HOME/Library/Logs/herdr-remote/service.err"
+
+linux-service-install:
+	relay/install-systemd-user-service.sh
+
+linux-service-uninstall:
+	relay/uninstall-systemd-user-service.sh
+
+linux-service-status:
+	systemctl --user status herdr-remote.service
+
+linux-service-logs:
+	journalctl --user -u herdr-remote.service -f
 
 web-deploy:
 	npx wrangler pages deploy web --project-name "$(WEB_PROJECT)"

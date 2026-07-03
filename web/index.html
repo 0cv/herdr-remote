@@ -47,6 +47,14 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .setting-group select { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
 .setting-group .hint { font-size: 0.65rem; color: var(--muted); margin-top: 4px; }
 .setting-group button { margin-top: 8px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--green); color: #000; font-weight: 600; font-size: 13px; cursor: pointer; }
+.setting-group button.secondary { background: var(--border); color: var(--text); }
+.setting-group button.danger { background: var(--red); color: #fff; }
+.relay-list { margin-top: 12px; border-top: 1px solid var(--border); }
+.relay-row { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+.relay-row .info { flex: 1; min-width: 0; }
+.relay-row .name { font-size: 0.78rem; font-weight: 600; }
+.relay-row .url { font-size: 0.64rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relay-row button { margin-top: 0; padding: 6px 10px; font-size: 12px; }
 .theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .theme-btn { padding: 8px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.7rem; cursor: pointer; text-align: center; }
 .theme-btn.active { border-color: var(--green); }
@@ -57,8 +65,9 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .agent { background: var(--surface); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .agent:active { opacity: 0.7; }
 .agent .info { flex: 1; }
-.agent .project { font-size: 0.85rem; font-weight: 500; }
+.agent .project { font-size: 0.85rem; font-weight: 500; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .agent .meta { font-size: 0.65rem; color: var(--muted); }
+.host-badge { color: var(--orange); font-size: 0.6rem; font-weight: 600; }
 
 /* Terminal view */
 .terminal-view { display: none; flex-direction: column; position: fixed; inset: 0; top: 49px; background: var(--bg); z-index: 50; }
@@ -117,12 +126,16 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 <div class="settings" id="settingsView">
   <h2>Settings</h2>
   <div class="setting-group">
+    <label>Relay Name</label>
+    <input id="relayLabel" type="text" placeholder="Fedora" />
     <label>Relay URL</label>
-    <input id="relayUrl" type="url" placeholder="wss://your-tunnel.trycloudflare.com" />
+    <input id="relayUrl" type="url" placeholder="wss://relay-fedora.example.com" />
     <label style="margin-top:8px">Token (optional)</label>
     <input id="relayToken" type="password" placeholder="shared secret" />
-    <button onclick="saveAndConnect()">Connect</button>
-    <div class="hint">Run <code>./relay/start.sh</code> to get a URL. <a href="https://github.com/dcolinmorgan/herdr-remote/blob/main/QUICKSTART.md" style="color:var(--blue)">Setup guide →</a></div>
+    <button onclick="addRelay()">Add Relay</button>
+    <button class="secondary" onclick="connectAll()">Reconnect All</button>
+    <div class="relay-list" id="relayList"></div>
+    <div class="hint">Use one relay URL per computer, such as <code>wss://relay-mac.example.com</code> and <code>wss://relay-fedora.example.com</code>.</div>
   </div>
   <div class="setting-group">
     <label>Theme</label>
@@ -177,15 +190,12 @@ const ANSI_COLORS = {
   90: '#777', 91: '#ff8080', 92: '#80ff80', 93: '#ffff80',
   94: '#80bfff', 95: '#ff80ff', 96: '#80ffff', 97: '#fff'
 };
-let ws = null, agents = [], activePane = null, refreshInterval = null, lastAgentsSignature = '', currentView = 'agents', viewIndex = 0;
+let relayConfigs = loadRelayConfigs(), connections = new Map(), agents = [], activePane = null, refreshInterval = null, lastAgentsSignature = '', currentView = 'agents', viewIndex = 0;
 
 // Settings
-const savedUrl = localStorage.getItem('herdr_relay_url') || '';
 const savedTheme = localStorage.getItem('herdr_theme') || 'nord';
-const savedToken = localStorage.getItem('herdr_relay_token') || '';
-document.getElementById('relayUrl').value = savedUrl;
-document.getElementById('relayToken').value = savedToken;
 applyTheme(savedTheme);
+renderRelayList();
 
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
@@ -200,15 +210,136 @@ function renderThemeGrid() {
 }
 renderThemeGrid();
 
+function loadRelayConfigs() {
+  const raw = localStorage.getItem('herdr_relays');
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter(r => r && r.url).map(normalizeRelayConfig);
+    } catch (_e) {}
+  }
+  const legacyUrl = localStorage.getItem('herdr_relay_url') || '';
+  if (!legacyUrl) return [];
+  const relay = normalizeRelayConfig({
+    url: legacyUrl,
+    token: localStorage.getItem('herdr_relay_token') || '',
+    label: relayLabelFromUrl(legacyUrl),
+  });
+  localStorage.setItem('herdr_relays', JSON.stringify([relay]));
+  return [relay];
+}
+
+function normalizeRelayConfig(relay) {
+  const url = (relay.url || '').trim();
+  const label = (relay.label || relayLabelFromUrl(url)).trim();
+  return {
+    id: relay.id || makeRelayId(label, url),
+    label,
+    url,
+    token: relay.token || '',
+  };
+}
+
+function makeRelayId(label, url) {
+  return `${label || relayLabelFromUrl(url)}-${url}`.toLowerCase()
+    .replace(/^wss?:\/\//, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 48) || 'relay';
+}
+
+function relayLabelFromUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    return host.split('.')[0] || 'relay';
+  } catch (_e) {
+    return 'relay';
+  }
+}
+
+function saveRelayConfigs() {
+  localStorage.setItem('herdr_relays', JSON.stringify(relayConfigs));
+}
+
+function relayConfig(id) {
+  return relayConfigs.find(r => r.id === id);
+}
+
+function relayLabel(id) {
+  const relay = relayConfig(id);
+  return relay ? relay.label : 'relay';
+}
+
+function addRelay() {
+  const labelInput = document.getElementById('relayLabel');
+  const urlInput = document.getElementById('relayUrl');
+  const tokenInput = document.getElementById('relayToken');
+  const url = urlInput.value.trim();
+  if (!url) return;
+  const existing = relayConfigs.find(r => r.url === url);
+  const next = normalizeRelayConfig({
+    id: existing && existing.id,
+    label: labelInput.value.trim() || relayLabelFromUrl(url),
+    url,
+    token: tokenInput.value.trim(),
+  });
+  if (existing) relayConfigs = relayConfigs.map(r => r.id === existing.id ? next : r);
+  else relayConfigs = [...relayConfigs, next];
+  saveRelayConfigs();
+  labelInput.value = '';
+  urlInput.value = '';
+  tokenInput.value = '';
+  renderRelayList();
+  connectAll();
+}
+
+function removeRelay(id) {
+  disconnectRelay(id);
+  relayConfigs = relayConfigs.filter(r => r.id !== id);
+  saveRelayConfigs();
+  removeAgentsForRelay(id);
+  renderRelayList();
+  render();
+  updateStatusDot();
+}
+
+function renderRelayList() {
+  const el = document.getElementById('relayList');
+  if (!el) return;
+  if (!relayConfigs.length) {
+    el.innerHTML = '<div class="hint">No relays configured.</div>';
+    updateSettingsStatus();
+    return;
+  }
+  el.innerHTML = relayConfigs.map(relay => {
+    const conn = connections.get(relay.id);
+    const status = conn ? conn.status : 'disconnected';
+    const color = status === 'connected' ? 'var(--green)' : status === 'connecting' ? 'var(--orange)' : 'var(--red)';
+    const idArg = escapeHtml(JSON.stringify(relay.id));
+    return `<div class="relay-row">
+      <span class="dot" style="background:${color}"></span>
+      <div class="info">
+        <div class="name">${escapeHtml(relay.label)}</div>
+        <div class="url">${escapeHtml(relay.url)}</div>
+      </div>
+      <button class="danger" onclick='removeRelay(${idArg})'>Remove</button>
+    </div>`;
+  }).join('');
+  updateSettingsStatus();
+}
+
 function toggleSettings() {
   if (currentView === 'settings') closeCurrentView();
   else navigateTo({view: 'settings'});
 }
 
 function updateSettingsStatus() {
-  document.getElementById('settingsStatus').innerHTML = ws && ws.readyState === 1
-    ? `<span style="color:var(--green)">● Connected</span> · ${agents.length} agents`
-    : `<span style="color:var(--red)">● Disconnected</span>`;
+  const total = relayConfigs.length;
+  const connected = [...connections.values()].filter(c => c.status === 'connected').length;
+  const connecting = [...connections.values()].filter(c => c.status === 'connecting').length;
+  const color = connected ? 'var(--green)' : connecting ? 'var(--orange)' : 'var(--red)';
+  const text = total ? `${connected}/${total} relays connected · ${agents.length} agents` : 'No relays configured';
+  document.getElementById('settingsStatus').innerHTML = `<span style="color:${color}">●</span> ${text}`;
 }
 
 function viewUrl(state) {
@@ -259,6 +390,7 @@ function showSettingsView() {
   document.getElementById('terminalView').classList.remove('active');
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('settingsView').style.display = 'block';
+  renderRelayList();
   updateSettingsStatus();
 }
 
@@ -269,37 +401,73 @@ function stateFromLocation() {
   return {view: 'agents'};
 }
 
-function saveAndConnect() {
-  const url = document.getElementById('relayUrl').value.trim();
-  if (!url) return;
-  localStorage.setItem('herdr_relay_url', url);
-  const token = document.getElementById('relayToken').value.trim();
-  if (token) localStorage.setItem('herdr_relay_token', token);
-  else localStorage.removeItem('herdr_relay_token');
-  connect();
-  closeCurrentView();
-}
-
 // Connection
-function connect() {
-  let url = localStorage.getItem('herdr_relay_url');
-  if (!url) { showSetup(); return; }
-  if (ws) ws.close();
-  setStatus('connecting');
-  // Append token as query param if stored separately
-  const token = localStorage.getItem('herdr_relay_token');
-  let wsUrl = url;
-  if (token) wsUrl += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
-  ws = new WebSocket(wsUrl);
-  ws.onopen = () => { setStatus('connected'); if (activePane) refreshPane(); };
-  ws.onclose = () => { setStatus('disconnected'); setTimeout(connect, 3000); };
-  ws.onerror = () => setStatus('disconnected');
-  ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
+function connectAll() {
+  for (const id of connections.keys()) disconnectRelay(id);
+  connections.clear();
+  agents = [];
+  lastAgentsSignature = '';
+  if (!relayConfigs.length) {
+    updateStatusDot();
+    showSetup();
+    renderRelayList();
+    return;
+  }
+  render();
+  for (const relay of relayConfigs) connectRelay(relay);
 }
 
-function setStatus(s) {
+function connectRelay(relay) {
+  disconnectRelay(relay.id);
+  const conn = { relay, ws: null, status: 'connecting', reconnectTimer: null, closed: false };
+  connections.set(relay.id, conn);
+  updateStatusDot();
+  renderRelayList();
+  let wsUrl = relay.url;
+  if (relay.token) wsUrl += (relay.url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(relay.token);
+  const ws = new WebSocket(wsUrl);
+  conn.ws = ws;
+  ws.onopen = () => {
+    conn.status = 'connected';
+    updateStatusDot();
+    renderRelayList();
+    if (activeAgent() && activeAgent().relay_id === relay.id) refreshPane();
+  };
+  ws.onclose = () => {
+    conn.status = 'disconnected';
+    removeAgentsForRelay(relay.id);
+    updateStatusDot();
+    renderRelayList();
+    if (!conn.closed) conn.reconnectTimer = setTimeout(() => connectRelay(relay), 3000);
+  };
+  ws.onerror = () => {
+    conn.status = 'disconnected';
+    updateStatusDot();
+    renderRelayList();
+  };
+  ws.onmessage = (e) => {
+    try {
+      handleMessage(relay.id, JSON.parse(e.data));
+    } catch (_err) {}
+  };
+}
+
+function disconnectRelay(id) {
+  const conn = connections.get(id);
+  if (!conn) return;
+  conn.closed = true;
+  if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
+  if (conn.ws) conn.ws.close();
+  connections.delete(id);
+}
+
+function updateStatusDot() {
   const dot = document.getElementById('statusDot');
-  dot.style.background = s==='connected'?'var(--green)':s==='connecting'?'var(--orange)':'var(--red)';
+  const states = [...connections.values()].map(c => c.status);
+  const connected = states.includes('connected');
+  const connecting = states.includes('connecting');
+  dot.style.background = connected ? 'var(--green)' : connecting ? 'var(--orange)' : 'var(--red)';
+  updateSettingsStatus();
 }
 
 function showSetup() {
@@ -309,15 +477,16 @@ function showSetup() {
     <p style="margin-top:8px">Monitor & approve agents from your phone</p>
     <p style="margin-top:16px;font-size:0.75rem;color:var(--muted);text-align:left;max-width:280px;margin-left:auto;margin-right:auto">
       <strong>Connect your own:</strong><br>
-      1. Run: <code style="font-size:0.7rem">cd relay && ./start.sh</code><br>
-      2. Tap ⚙ → paste the wss:// URL<br>
+      1. Run a relay on each computer<br>
+      2. Give each computer its own wss:// URL<br>
+      3. Tap ⚙ → add each relay URL<br>
     </p>
   </div>`;
 }
 
-function handleMessage(msg) {
+function handleMessage(relayId, msg) {
   if (msg.type === 'agents') {
-    const nextAgents = mergeAgentList(msg.agents || []);
+    const nextAgents = mergeAgentList(relayId, (msg.agents || []).map(a => normalizeAgent(relayId, a)));
     const nextSignature = agentsSignature(nextAgents);
     agents = nextAgents;
     if (nextSignature !== lastAgentsSignature) {
@@ -326,28 +495,55 @@ function handleMessage(msg) {
     }
   }
   else if (msg.type === 'blocked') {
-    const a = agents.find(x => x.pane_id === msg.pane_id);
+    const next = normalizeAgent(relayId, {...msg, status: 'blocked'});
+    const a = agents.find(x => x.pane_id === next.pane_id);
     if (a) { a.status='blocked'; a.prompt=msg.prompt; a.options=msg.options; }
-    else agents.push({...msg, status:'blocked'});
+    else agents.push(next);
     lastAgentsSignature = agentsSignature(agents);
     render();
-  } else if (msg.type === 'pane_content' && msg.pane_id === activePane) {
+  } else if (msg.type === 'pane_content' && clientPaneId(relayId, msg.pane_id) === activePane) {
     updateTerminalContent(msg.content || '(empty)', msg.format);
   }
 }
 
-function mergeAgentList(nextAgents) {
+function normalizeAgent(relayId, agent) {
+  const relay = relayConfig(relayId);
+  const rawPaneId = agent.raw_pane_id || agent.pane_id || '';
+  return {
+    ...agent,
+    relay_id: relayId,
+    relay_label: relay ? relay.label : 'relay',
+    raw_pane_id: rawPaneId,
+    pane_id: clientPaneId(relayId, rawPaneId),
+  };
+}
+
+function clientPaneId(relayId, rawPaneId) {
+  return `${relayId}::${rawPaneId}`;
+}
+
+function mergeAgentList(relayId, nextAgents) {
   const previousById = new Map(agents.map(a => [a.pane_id, a]));
-  return nextAgents.map(next => {
+  const retained = agents.filter(a => a.relay_id !== relayId);
+  const merged = nextAgents.map(next => {
     const previous = previousById.get(next.pane_id);
     if (!previous || next.status !== 'blocked') return next;
     return {...next, prompt: previous.prompt, options: previous.options};
   });
+  return retained.concat(merged);
+}
+
+function removeAgentsForRelay(relayId) {
+  const active = activeAgent();
+  agents = agents.filter(a => a.relay_id !== relayId);
+  lastAgentsSignature = agentsSignature(agents);
+  if (active && active.relay_id === relayId) showAgentListView();
+  render();
 }
 
 function agentsSignature(list) {
   return JSON.stringify(list.map(a => [
-    a.pane_id, a.agent, a.status, a.project, a.cwd, a.host,
+    a.relay_id, a.pane_id, a.raw_pane_id, a.agent, a.status, a.project, a.cwd, a.host,
     a.prompt, a.options
   ]));
 }
@@ -363,7 +559,7 @@ function updateTerminalContent(content, format) {
 }
 
 function escapeHtml(text) {
-  return text.replace(/[&<>"']/g, ch => ({
+  return String(text ?? '').replace(/[&<>"']/g, ch => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[ch]));
 }
@@ -412,29 +608,52 @@ function ansiToHtml(text) {
   return html;
 }
 
+function hostLabel(agent) {
+  return agent.relay_label || relayLabel(agent.relay_id);
+}
+
+function sortedAgents(list) {
+  return [...list].sort((a, b) =>
+    hostLabel(a).localeCompare(hostLabel(b)) ||
+    (a.project || a.agent || '').localeCompare(b.project || b.agent || '') ||
+    (a.agent || '').localeCompare(b.agent || '')
+  );
+}
+
+function agentCountLabel() {
+  if (!relayConfigs.length) return '';
+  const connected = [...connections.values()].filter(c => c.status === 'connected').length;
+  const relayText = `${connected}/${relayConfigs.length} relays`;
+  return agents.length ? `${relayText} · ${agents.length}` : relayText;
+}
+
 function render() {
   const listView = document.getElementById('agentListView');
   const previousScrollTop = listView.scrollTop;
   const blocked = agents.filter(a => a.status==='blocked');
   const working = agents.filter(a => a.status==='working');
   const idle = agents.filter(a => a.status==='idle'||a.status==='unknown');
-  document.getElementById('agentCount').textContent = agents.length ? `${agents.length}` : '';
+  document.getElementById('agentCount').textContent = agentCountLabel();
   let html = '';
   if (blocked.length) html += section('Blocked', 'var(--red)', blocked);
   if (working.length) html += section('Working', 'var(--green)', working);
   if (idle.length) html += section('Idle', 'var(--muted)', idle);
-  if (!agents.length) html = '<div class="empty">Waiting for agents…</div>';
+  if (!agents.length) html = relayConfigs.length ? '<div class="empty">Waiting for agents…</div>' : '';
   document.getElementById('agents').innerHTML = html;
   listView.scrollTop = previousScrollTop;
 }
 
 function section(title, color, list) {
   return `<div class="section-header"><span class="dot" style="background:${color}"></span>${title}</div>` +
-    list.map(a => {
-      const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${a.host}</span>`:'';
-      return `<div class="agent" onclick="openTerminal('${a.pane_id}')">
+    sortedAgents(list).map(a => {
+      const project = escapeHtml(a.project || a.agent || '');
+      const agent = escapeHtml(a.agent || 'agent');
+      const status = escapeHtml(a.status || 'unknown');
+      const host = escapeHtml(hostLabel(a));
+      const paneArg = escapeHtml(JSON.stringify(a.pane_id));
+      return `<div class="agent" onclick='openTerminal(${paneArg})'>
         <span class="dot" style="background:${color}"></span>
-        <div class="info"><div class="project">${a.project||a.agent}${host}</div><div class="meta">${a.agent} · ${a.status}</div></div>
+        <div class="info"><div class="project">${project}<span class="host-badge">@${host}</span></div><div class="meta">${agent} · ${status}</div></div>
       </div>`;
     }).join('');
 }
@@ -448,7 +667,7 @@ function showTerminalView(paneId) {
   currentView = 'terminal';
   clearInterval(refreshInterval);
   const a = agents.find(x => x.pane_id===paneId);
-  document.getElementById('termTitle').textContent = a?`${a.project} · ${a.agent}`:paneId;
+  document.getElementById('termTitle').textContent = a?`${a.project || a.agent} · ${a.agent} @${hostLabel(a)}`:paneId;
   document.getElementById('settingsView').style.display = 'none';
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('terminalView').classList.add('active');
@@ -458,7 +677,8 @@ function showTerminalView(paneId) {
     const opts = a.options||['yes, single permission','trust, always allow','no (tab to edit)'];
     qa.innerHTML = opts.map(o => {
       const cls = o.includes('yes')||o.includes('approve')?'btn-yes':o.includes('trust')?'btn-trust':'btn-no';
-      return `<button class="${cls}" onclick="respond('${o.replace(/'/g,"\\'")}')">${o.split(',')[0]}</button>`;
+      const arg = escapeHtml(JSON.stringify(o));
+      return `<button class="${cls}" onclick='respond(${arg})'>${escapeHtml(o.split(',')[0])}</button>`;
     }).join('');
     // Colored shortcut keys in keyboard bar
     ak.innerHTML = `<button class="key-green" onclick="respond('yes, single permission')">y</button><button class="key-blue" onclick="respond('trust, always allow')">a</button><button class="key-red" onclick="respond('no (tab to edit)')">n</button>`;
@@ -474,19 +694,32 @@ function closeTerminal() {
   closeCurrentView();
 }
 
-function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_pane',pane_id:activePane,lines:TERMINAL_HISTORY_LINES,format:'ansi'})); }
+function activeAgent() {
+  return activePane ? agents.find(x => x.pane_id === activePane) : null;
+}
+
+function sendToActive(payload) {
+  const agent = activeAgent();
+  if (!agent) return false;
+  const conn = connections.get(agent.relay_id);
+  if (!conn || !conn.ws || conn.ws.readyState !== 1) return false;
+  conn.ws.send(JSON.stringify({...payload, pane_id: agent.raw_pane_id}));
+  return true;
+}
+
+function refreshPane() { sendToActive({type:'read_pane',lines:TERMINAL_HISTORY_LINES,format:'ansi'}); }
 function sendText() {
   const i=document.getElementById('termInput');
-  if(!i.value||!ws||!activePane)return;
-  ws.send(JSON.stringify({type:'send_text',pane_id:activePane,text:i.value}));
-  ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:['Enter']}));
+  if(!i.value||!activePane)return;
+  if (!sendToActive({type:'send_text',text:i.value})) return;
+  sendToActive({type:'send_keys',keys:['Enter']});
   i.value=''; setTimeout(refreshPane,500);
 }
-function sendKey(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:[k]}));setTimeout(refreshPane,300);}
-function sendKeys(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:k}));setTimeout(refreshPane,300);}
+function sendKey(k){if(!activePane)return;sendToActive({type:'send_keys',keys:[k]});setTimeout(refreshPane,300);}
+function sendKeys(k){if(!activePane)return;sendToActive({type:'send_keys',keys:k});setTimeout(refreshPane,300);}
 function toggleArrows(){document.getElementById('arrowPopup').classList.toggle('show');}
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
-function respond(t){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'respond',pane_id:activePane,text:t}));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
+function respond(t){if(!activePane)return;if(!sendToActive({type:'respond',text:t}))return;document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
 document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing&&e.keyCode!==229){e.preventDefault();sendText();}}); // IME confirmation also emits Enter; do not submit while composing.
 
 window.addEventListener('popstate', event => {
@@ -496,13 +729,13 @@ window.addEventListener('popstate', event => {
 });
 
 function initializeView() {
-  const initialState = savedUrl ? stateFromLocation() : {view: 'agents'};
+  const initialState = relayConfigs.length ? stateFromLocation() : {view: 'agents'};
   replaceView({view: 'agents'});
   if (initialState.view !== 'agents') navigateTo(initialState);
 }
 
 initializeView();
-if (savedUrl) setTimeout(connect, 100); else showSetup();
+if (relayConfigs.length) setTimeout(connectAll, 100); else showSetup();
 </script>
 </body>
 </html>

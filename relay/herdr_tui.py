@@ -28,7 +28,8 @@ class AgentCard(Static):
         color = {"blocked": "red", "working": "green", "idle": "dim"}.get(status, "dim")
         name = self.agent.get("agent", "?")
         project = self.agent.get("project", "")
-        yield Label(f"[{color}]●[/] {project}/{name} [{color}]{status}[/]", markup=True)
+        host = self.agent.get("host", "local")
+        yield Label(f"[{color}]●[/] @{host} {project}/{name} [{color}]{status}[/]", markup=True)
 
 
 class AgentColumn(Vertical):
@@ -57,7 +58,7 @@ class ApprovalPanel(Vertical):
         self.agent = agent
         self.styles.height = "auto"
         self.styles.border = ("round", "red")
-        self.border_title = f"⚠ {agent.get('agent', '?')} — {agent.get('project', '')}"
+        self.border_title = f"⚠ @{agent.get('host', 'local')} {agent.get('agent', '?')} — {agent.get('project', '')}"
 
     def compose(self) -> ComposeResult:
         prompt = self.agent.get("prompt", "Waiting for input...")

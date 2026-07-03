@@ -9,6 +9,8 @@ RELAY_PID=""
 TUNNEL_PID=""
 LOG_FILE=""
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
 cleanup() {
     if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
         kill "$TUNNEL_PID" 2>/dev/null || true
@@ -83,7 +85,11 @@ else
     echo "✓ Relay running on ws://localhost:$PORT"
     echo ""
     echo "  Install cloudflared for remote access:"
-    echo "    brew install cloudflared"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "    brew install cloudflared"
+    else
+        echo "    https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/"
+    fi
     echo ""
     wait $RELAY_PID
 fi

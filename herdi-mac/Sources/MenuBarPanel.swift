@@ -10,8 +10,6 @@ struct MenuBarPanel: View {
     private var blocked: [Agent] { relay.agents.filter { $0.status == .blocked } }
     private var working: [Agent] { relay.agents.filter { $0.status == .working } }
     private var idle: [Agent] { relay.agents.filter { $0.status == .idle || $0.status == .unknown } }
-    private var localAgents: [Agent] { relay.agents.filter { $0.host == "local" } }
-    private var remoteAgents: [Agent] { relay.agents.filter { $0.host != "local" } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,31 +35,17 @@ struct MenuBarPanel: View {
                 // Agent list
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        // Local section
-                        if !localAgents.isEmpty {
-                            hostSection("Local", agents: localAgents)
+                        if !blocked.isEmpty {
+                            statusGroup("Blocked", .red, blocked)
+                        }
+                        if !working.isEmpty {
+                            statusGroup("Working", .green, working)
+                        }
+                        if !idle.isEmpty {
+                            statusGroup("Idle", .gray, idle)
                         }
 
-                        // Remote sections (grouped by host)
-                        let remoteHosts = Set(remoteAgents.map(\.host)).sorted()
-                        ForEach(remoteHosts, id: \.self) { host in
-                            hostSection("@\(host)", agents: remoteAgents.filter { $0.host == host })
-                        }
-
-                        // Show configured but unconnected remotes
-                        let connectedHosts = Set(remoteAgents.map(\.host))
-                        let disconnectedRemotes = relay.remotes.filter { !connectedHosts.contains($0) }
-                        if !disconnectedRemotes.isEmpty {
-                            ForEach(disconnectedRemotes, id: \.self) { remote in
-                                HStack(spacing: 4) {
-                                    Circle().fill(.orange).frame(width: 6, height: 6)
-                                    Text("@\(remote)").font(.caption).foregroundStyle(.secondary)
-                                    Text("— no agents / unreachable").font(.caption2).foregroundStyle(.tertiary)
-                                }
-                            }
-                        }
-
-                        if relay.agents.isEmpty && relay.remotes.isEmpty {
+                        if relay.agents.isEmpty {
                             VStack(spacing: 8) {
                                 Text(relay.isConnected ? "No agents running" : "Connecting…")
                                     .foregroundStyle(.secondary)
@@ -96,31 +80,6 @@ struct MenuBarPanel: View {
         .onAppear { updater.checkForUpdates() }
     }
 
-    private func hostSection(_ title: String, agents: [Agent]) -> some View {
-        let blocked = agents.filter { $0.status == .blocked }
-        let working = agents.filter { $0.status == .working }
-        let idle = agents.filter { $0.status == .idle || $0.status == .unknown }
-
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 4) {
-                Circle().fill(.green).frame(width: 6, height: 6)
-                Text(title).font(.caption.bold()).foregroundStyle(.secondary)
-                Spacer()
-                Text("\(agents.count)").font(.caption2).foregroundStyle(.tertiary)
-            }
-
-            if !blocked.isEmpty {
-                statusGroup("Blocked", .red, blocked)
-            }
-            if !working.isEmpty {
-                statusGroup("Working", .green, working)
-            }
-            if !idle.isEmpty {
-                statusGroup("Idle", .gray, idle)
-            }
-        }
-    }
-
     private func statusGroup(_ title: String, _ color: Color, _ agents: [Agent]) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
@@ -145,8 +104,6 @@ struct SettingsPanel: View {
     @Binding var launchAtLogin: Bool
     let updater: Updater
     @State private var relayURL = "ws://127.0.0.1:8375"
-    @State private var newRemote = ""
-    @State private var newPassword = ""
 
     var body: some View {
         ScrollView {
@@ -190,41 +147,6 @@ struct SettingsPanel: View {
                             Text("Polling herdr CLI every 2s")
                                 .font(.caption2).foregroundStyle(.tertiary)
                         }
-                    }
-                    .padding(4)
-                }
-
-                // Remote Hosts
-                GroupBox("Remote Hosts (SSH)") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if relay.remotes.isEmpty {
-                            Text("No remotes configured").font(.caption2).foregroundStyle(.tertiary)
-                        }
-                        ForEach(relay.remotes, id: \.self) { remote in
-                            HStack {
-                                Image(systemName: "server.rack").font(.caption2)
-                                Text(remote).font(.caption)
-                                Spacer()
-                                Button { relay.removeRemote(remote) } label: {
-                                    Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-                                }.buttonStyle(.plain)
-                            }
-                        }
-                        HStack {
-                            TextField("user@host", text: $newRemote)
-                                .textFieldStyle(.roundedBorder).font(.caption)
-                            SecureField("password", text: $newPassword)
-                                .textFieldStyle(.roundedBorder).font(.caption)
-                                .frame(width: 80)
-                            Button("Add") {
-                                relay.addRemote(newRemote, password: newPassword.isEmpty ? nil : newPassword)
-                                newRemote = ""
-                                newPassword = ""
-                            }
-                            .font(.caption).disabled(newRemote.isEmpty)
-                        }
-                        Text("Password stored in Keychain. Leave blank for key auth.")
-                            .font(.caption2).foregroundStyle(.tertiary)
                     }
                     .padding(4)
                 }

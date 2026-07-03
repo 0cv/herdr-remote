@@ -21,14 +21,9 @@ final class RelayConnection {
     private var reconnectAttempt = 0
     private var reconnecting = false
     private let herdrPath: String
-    var remotes: [String] = [] // SSH targets, e.g. ["user@host"]
 
     init() {
         herdrPath = Self.findHerdrPath()
-        // Load saved remotes
-        if let saved = UserDefaults.standard.stringArray(forKey: "herdi_remotes") {
-            remotes = saved
-        }
         startDirect()
     }
 
@@ -60,14 +55,7 @@ final class RelayConnection {
 
     private func pollHerdr() {
         DispatchQueue.global(qos: .utility).async { [self] in
-            // Local
-            var allAgents = parseAgents(from: runHerdr("pane", "list"), host: "local")
-
-            // Remotes via SSH
-            for remote in remotes {
-                let result = runSSH(remote, "herdr", "pane", "list")
-                allAgents += parseAgents(from: result, host: remote)
-            }
+            let allAgents = parseAgents(from: runHerdr("pane", "list"), host: "local")
 
             DispatchQueue.main.async { [self] in
                 isConnected = true
@@ -77,7 +65,7 @@ final class RelayConnection {
                     if let existing = agents.first(where: { $0.id == a.id }) {
                         if existing.status != a.status {
                             if a.status == .blocked && existing.status != .blocked {
-                                readPaneForBlocked(existing, remote: a.host == "local" ? nil : a.host)
+                                readPaneForBlocked(existing)
                             }
                             existing.status = a.status
                         }
@@ -86,7 +74,7 @@ final class RelayConnection {
                     } else {
                         let agent = Agent(id: a.id, name: a.name, status: a.status, project: a.project, cwd: a.cwd, host: a.host)
                         agents.append(agent)
-                        if a.status == .blocked { readPaneForBlocked(agent, remote: a.host == "local" ? nil : a.host) }
+                        if a.status == .blocked { readPaneForBlocked(agent) }
                     }
                 }
                 agents.removeAll { !seen.contains($0.id) }
@@ -106,65 +94,16 @@ final class RelayConnection {
 
         return panes.compactMap { p in
             guard let agent = p["agent"] as? String, !agent.isEmpty else { return nil }
-            let paneId = (host == "local" ? "" : "\(host):") + (p["pane_id"] as? String ?? "")
+            let paneId = p["pane_id"] as? String ?? ""
             let status = AgentStatus(rawValue: p["agent_status"] as? String ?? "unknown") ?? .unknown
             let cwd = p["cwd"] as? String ?? ""
             return ParsedAgent(id: paneId, name: agent, status: status, project: (cwd as NSString).lastPathComponent, cwd: cwd, host: host)
         }
     }
 
-    private func runSSH(_ remote: String, _ args: String...) -> String {
-        let process = Process()
-        let password = KeychainHelper.getPassword(for: remote)
-
-        if let password, FileManager.default.fileExists(atPath: "/opt/homebrew/bin/sshpass") {
-            // Use sshpass for password auth
-            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/sshpass")
-            process.arguments = ["-p", password, "ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no", remote] + args
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = ["-o", "ConnectTimeout=5", "-o", "BatchMode=yes", remote] + args
-        }
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return "" }
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        } catch { return "" }
-    }
-
-    func addRemote(_ remote: String, password: String? = nil) {
-        guard !remote.isEmpty, !remotes.contains(remote) else { return }
-        remotes.append(remote)
-        UserDefaults.standard.set(remotes, forKey: "herdi_remotes")
-        if let password, !password.isEmpty {
-            KeychainHelper.setPassword(password, for: remote)
-        }
-    }
-
-    func removeRemote(_ remote: String) {
-        remotes.removeAll { $0 == remote }
-        UserDefaults.standard.set(remotes, forKey: "herdi_remotes")
-        KeychainHelper.deletePassword(for: remote)
-    }
-
-    private func readPaneForBlocked(_ agent: Agent, remote: String? = nil) {
-        // Extract the real pane_id (strip host prefix if present)
-        let paneId = agent.id.contains(":") && remote != nil
-            ? String(agent.id.drop(while: { $0 != ":" }).dropFirst())
-            : agent.id
-
+    private func readPaneForBlocked(_ agent: Agent) {
         DispatchQueue.global(qos: .utility).async { [self] in
-            let raw: String
-            if let remote {
-                raw = runSSH(remote, "herdr", "pane", "read", paneId, "--lines", "20", "--source", "recent")
-            } else {
-                raw = runHerdr("pane", "read", paneId, "--lines", "20", "--source", "recent")
-            }
+            let raw = runHerdr("pane", "read", agent.id, "--lines", "20", "--source", "recent")
             let lines = raw.components(separatedBy: .newlines)
                 .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
                 .suffix(6)
@@ -231,14 +170,7 @@ final class RelayConnection {
     func send(response: ResponseMessage) {
         if mode == .direct {
             DispatchQueue.global(qos: .userInitiated).async { [self] in
-                let paneId = response.pane_id
-                // Check if this is a remote agent (id starts with "host:")
-                if let agent = agents.first(where: { $0.id == paneId }), agent.host != "local" {
-                    let realId = String(paneId.drop(while: { $0 != ":" }).dropFirst())
-                    _ = runSSH(agent.host, "herdr", "pane", "send-text", realId, response.text + "\n")
-                } else {
-                    _ = runHerdr("pane", "send-text", paneId, response.text + "\n")
-                }
+                _ = runHerdr("pane", "send-text", response.pane_id, response.text + "\n")
             }
         } else {
             guard let data = try? JSONEncoder().encode(response) else { return }
