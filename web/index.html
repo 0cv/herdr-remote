@@ -338,7 +338,7 @@ function sendKeys(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'se
 function toggleArrows(){document.getElementById('arrowPopup').classList.toggle('show');}
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
 function respond(t){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'respond',pane_id:activePane,text:t}));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
-document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendText();}});
+document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing&&e.keyCode!==229){e.preventDefault();sendText();}});
 
 if (savedUrl) setTimeout(connect, 100); else showSetup();
 </script>
