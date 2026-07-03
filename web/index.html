@@ -5,12 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;herdr-remote&quot;,&quot;short_name&quot;:&quot;herdr&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;%230a0a0a&quot;,&quot;theme_color&quot;:&quot;%230a0a0a&quot;}">
-<title>herdr-remote</title>
+<link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;Herdr Mobile Relay&quot;,&quot;short_name&quot;:&quot;Herdr Relay&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;%230a0a0a&quot;,&quot;theme_color&quot;:&quot;%230a0a0a&quot;}">
+<title>Herdr Mobile Relay</title>
 <style>
 :root {
   --bg: #0a0a0a; --surface: #1a1a1a; --border: #222; --text: #e5e5e5; --muted: #888;
   --green: #22c55e; --red: #ef4444; --blue: #3b82f6; --orange: #f97316;
+  --header-height: 49px;
+  --terminal-font-size: 0.62rem;
 }
 [data-theme="light"] {
   --bg: #f5f5f5; --surface: #fff; --border: #ddd; --text: #1a1a1a; --muted: #666;
@@ -29,10 +31,16 @@
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100dvh; display: flex; flex-direction: column; }
+body[data-view="terminal"] { --header-height: 38px; }
 
-.header { padding: 12px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
-.header h1 { font-size: 1rem; flex: 1; }
-.header button { background: none; border: none; color: var(--muted); font-size: 1.2rem; cursor: pointer; padding: 4px; }
+.header { height: var(--header-height); padding: 0 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.header h1 { font-size: 1rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header button { background: none; border: none; color: var(--muted); font-size: 1.2rem; cursor: pointer; padding: 4px; min-width: 30px; }
+.header-back { display: none; }
+body[data-view="terminal"] .header { padding: 0 10px; gap: 6px; }
+body[data-view="terminal"] .header h1 { font-size: 0.78rem; font-weight: 500; }
+body[data-view="terminal"] .header-back { display: block; }
+body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { display: none; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
 .view { flex: 1; overflow-y: auto; }
@@ -49,6 +57,9 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .setting-group button { margin-top: 8px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--green); color: #000; font-weight: 600; font-size: 13px; cursor: pointer; }
 .setting-group button.secondary { background: var(--border); color: var(--text); }
 .setting-group button.danger { background: var(--red); color: #fff; }
+.toggle-row { display: flex !important; align-items: center; justify-content: space-between; gap: 12px; margin: 0 !important; color: var(--text) !important; }
+.toggle-row span { font-size: 0.75rem; color: var(--muted); }
+.setting-group .toggle-row input { width: 18px; height: 18px; padding: 0; flex-shrink: 0; accent-color: var(--green); }
 .relay-list { margin-top: 12px; border-top: 1px solid var(--border); }
 .relay-row { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
 .relay-row .info { flex: 1; min-width: 0; }
@@ -56,8 +67,15 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .relay-row .url { font-size: 0.64rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .relay-row button { margin-top: 0; padding: 6px 10px; font-size: 12px; }
 .theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.theme-btn { padding: 8px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.7rem; cursor: pointer; text-align: center; }
-.theme-btn.active { border-color: var(--green); }
+.setting-group .theme-btn { margin-top: 0; padding: 8px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.7rem; font-weight: 600; cursor: pointer; text-align: center; }
+.font-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.setting-group .font-btn { margin-top: 0; padding: 8px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.7rem; font-weight: 600; cursor: pointer; text-align: center; }
+.setting-group .font-btn[data-size="compact"] { font-size: 0.62rem; }
+.setting-group .font-btn[data-size="regular"] { font-size: 0.72rem; }
+.setting-group .font-btn[data-size="large"] { font-size: 0.82rem; }
+.setting-group .theme-btn.active, .setting-group .font-btn.active { border-color: var(--green); background: var(--green); color: #050505; box-shadow: 0 0 0 1px var(--green); }
+[data-terminal-font="regular"] { --terminal-font-size: 0.72rem; }
+[data-terminal-font="large"] { --terminal-font-size: 0.82rem; }
 
 /* Agent list */
 .agents { padding: 12px; }
@@ -70,28 +88,31 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .host-badge { color: var(--orange); font-size: 0.6rem; font-weight: 600; }
 
 /* Terminal view */
-.terminal-view { display: none; flex-direction: column; position: fixed; inset: 0; top: 49px; background: var(--bg); z-index: 50; }
+.terminal-view { display: none; flex-direction: column; position: fixed; inset: 0; top: var(--header-height); background: var(--bg); z-index: 50; }
 .terminal-view.active { display: flex; }
-.term-header { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.term-header { display: none; padding: 10px 16px; border-bottom: 1px solid var(--border); align-items: center; gap: 8px; flex-shrink: 0; }
 .term-header .back { background: none; border: none; color: var(--blue); font-size: 1.4rem; cursor: pointer; padding: 4px 8px; }
 .term-header .title { flex: 1; font-size: 0.8rem; font-weight: 500; }
 .term-header .refresh-btn { background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
-.term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: #000; font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: #ccc; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: #000; font-family: 'SF Mono', 'Menlo', monospace; font-size: var(--terminal-font-size); line-height: 1.5; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: #ccc; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .quick-actions { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+.quick-actions:empty { display: none; }
 .quick-actions button { padding: 10px 14px; border-radius: 8px; border: none; font-size: 0.75rem; font-weight: 600; cursor: pointer; flex: 1; min-width: 70px; }
 .btn-yes { background: var(--green); color: #000; } .btn-trust { background: var(--blue); color: #fff; } .btn-no { background: var(--red); color: #fff; }
-.term-input { border-top: 1px solid var(--border); padding: 8px 12px; display: flex; gap: 6px; background: var(--surface); flex-shrink: 0; }
-.term-input input { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; font-family: monospace; min-width: 0; }
-.term-input button { padding: 10px 14px; border-radius: 6px; border: none; background: var(--blue); color: #fff; font-weight: 700; font-size: 16px; flex-shrink: 0; }
-.term-keys { border-top: 1px solid var(--border); padding: 6px 8px; display: flex; gap: 4px; background: var(--surface); flex-shrink: 0; padding-bottom: env(safe-area-inset-bottom, 6px); align-items: center; overflow-x: auto; }
-.term-keys button { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.term-input { position: relative; z-index: 1; border-top: 1px solid var(--border); padding: 8px 12px; display: flex; gap: 6px; background: var(--surface); flex-shrink: 0; align-items: flex-end; }
+.term-input textarea { flex: 1; min-height: 40px; max-height: 120px; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.35; font-family: monospace; min-width: 0; resize: none; overflow-y: auto; }
+.term-input button { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-weight: 700; font-size: 12px; flex-shrink: 0; }
+.term-keys { position: relative; z-index: 2; border-top: 1px solid var(--border); padding: 3px 6px; display: flex; gap: 3px; background: var(--surface); flex-shrink: 0; padding-bottom: max(3px, env(safe-area-inset-bottom, 0px)); align-items: center; overflow: visible; }
+.term-keys button { padding: 5px 8px; min-height: 28px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11px; cursor: pointer; white-space: nowrap; }
 .term-keys button:active { background: var(--border); }
 .term-keys button.key-green { border-color: var(--green); color: var(--green); }
 .term-keys button.key-blue { border-color: var(--blue); color: var(--blue); }
 .term-keys button.key-red { border-color: var(--red); color: var(--red); }
+.term-keys button.key-send { border-color: var(--green); color: var(--green); font-weight: 700; }
+.term-keys button.key-clear { border-color: var(--orange); color: var(--orange); font-weight: 700; }
 .term-keys .spacer { flex: 1; }
 .arrow-toggle { position: relative; }
-.arrow-popup { display: none; position: absolute; bottom: 44px; right: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+.arrow-popup { display: none; position: absolute; z-index: 20; bottom: 34px; right: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
 .arrow-popup.show { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); gap: 4px; }
 .arrow-popup button { width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .arrow-popup button:active { background: var(--border); }
@@ -103,13 +124,15 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 @media (min-width: 768px) {
   body { max-width: 1200px; margin: 0 auto; }
   .terminal-view { position: static; display: none; }
-  .terminal-view.active { display: flex; height: calc(100dvh - 49px); }
+  .terminal-view.active { display: flex; height: calc(100dvh - var(--header-height)); }
   .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
   .section-header { grid-column: 1 / -1; }
   .term-content { min-height: 300px; }
+  .term-keys { padding: 6px 8px; gap: 4px; padding-bottom: 6px; }
+  .term-keys button { padding: 8px 12px; min-height: auto; border-radius: 6px; font-size: 13px; }
 }
 @media (pointer: fine) {
-  .term-keys .arrow-toggle, .term-keys button[onclick*="blur"] { display: none; }
+  .term-keys .arrow-toggle { display: none; }
   .quick-actions button { flex: none; min-width: auto; padding: 8px 18px; }
 }
 </style>
@@ -117,10 +140,11 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 <body>
 
 <div class="header">
+  <button class="header-back" id="headerBack" onclick="closeCurrentView()" aria-label="Back">‹</button>
   <span class="dot" id="statusDot"></span>
-  <h1>🐑 herdr</h1>
+  <h1 id="appTitle">🐑 herdr</h1>
   <span id="agentCount" style="font-size:0.7rem;color:var(--muted)"></span>
-  <button onclick="toggleSettings()">⚙</button>
+  <button id="settingsButton" onclick="toggleSettings()" aria-label="Settings">⚙</button>
 </div>
 
 <div class="settings" id="settingsView">
@@ -142,6 +166,17 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     <div class="theme-grid" id="themeGrid"></div>
   </div>
   <div class="setting-group">
+    <label>Terminal Font Size</label>
+    <div class="font-grid" id="fontGrid"></div>
+  </div>
+  <div class="setting-group">
+    <label>Terminal Display</label>
+    <label class="toggle-row">
+      <span>Show Agent Status Line</span>
+      <input id="codexStatusLineToggle" type="checkbox" onchange="setCodexStatusLineVisible(this.checked)" />
+    </label>
+  </div>
+  <div class="setting-group">
     <label>Status</label>
     <div id="settingsStatus" style="font-size:0.75rem"></div>
   </div>
@@ -157,44 +192,49 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     <span class="title" id="termTitle"></span>
     <button class="refresh-btn" onclick="refreshPane()">↻</button>
   </div>
-  <div class="term-content" id="termContent">Loading…</div>
+  <div class="term-content" id="termContent" tabindex="-1">Loading…</div>
   <div class="quick-actions" id="quickActions"></div>
   <div class="term-input">
-    <input id="termInput" placeholder="Type…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-    <button onclick="sendText()">⏎</button>
+    <textarea id="termInput" rows="2" placeholder="Type…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="resizeComposer()"></textarea>
+    <button onclick="sendText()" aria-label="Insert into terminal">Insert</button>
   </div>
   <div class="term-keys">
-    <button onclick="sendKey('Tab')">⇥</button>
-    <button onclick="sendKey('Escape')">Esc</button>
-    <button onclick="sendKeys(['Ctrl+c'])">^C</button>
+    <button class="key-send" onclick="submitPrompt()" aria-label="Submit prompt">Send</button>
+    <button class="key-clear" onclick="clearPromptText()" aria-label="Clear prompt text">Clear</button>
+    <button onclick="cancelPrompt()">Esc</button>
+    <button onclick="interruptPrompt()">^C</button>
     <span id="actionKeys"></span>
     <span class="spacer"></span>
     <div class="arrow-toggle">
-      <button onclick="toggleArrows()">↕</button>
-      <div class="arrow-popup" id="arrowPopup">
-        <button class="empty"></button><button onclick="sendKey('Up');hideArrows()">↑</button><button class="empty"></button>
-        <button onclick="sendKey('Left');hideArrows()">←</button><button onclick="sendKey('Enter');hideArrows()">⏎</button><button onclick="sendKey('Right');hideArrows()">→</button>
-        <button class="empty"></button><button onclick="sendKey('Down');hideArrows()">↓</button><button class="empty"></button>
+      <button onclick="toggleArrows(event)" aria-label="Arrow keys">↕</button>
+      <div class="arrow-popup" id="arrowPopup" onclick="event.stopPropagation()">
+        <button class="empty"></button><button onclick="sendKey('Up')">↑</button><button class="empty"></button>
+        <button onclick="sendKey('Left')">←</button><button onclick="sendKey('Enter')">⏎</button><button onclick="sendKey('Right')">→</button>
+        <button class="empty"></button><button onclick="sendKey('Down')">↓</button><button class="empty"></button>
       </div>
     </div>
-    <button onclick="document.getElementById('termInput').blur()">⌨↓</button>
   </div>
 </div>
 
 <script>
 const THEMES = ['dark','light','nord','solarized','rose'];
+const TERMINAL_FONT_SIZES = ['compact','regular','large'];
 const TERMINAL_HISTORY_LINES = 500;
+const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
   34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
   90: '#777', 91: '#ff8080', 92: '#80ff80', 93: '#ffff80',
   94: '#80bfff', 95: '#ff80ff', 96: '#80ffff', 97: '#fff'
 };
-let relayConfigs = loadRelayConfigs(), connections = new Map(), agents = [], activePane = null, refreshInterval = null, lastAgentsSignature = '', currentView = 'agents', viewIndex = 0;
+let relayConfigs = loadRelayConfigs(), connections = new Map(), agents = [], activePane = null, refreshInterval = null, lastAgentsSignature = '', currentView = 'agents', viewIndex = 0, lastInsertedBackspaces = 0;
 
 // Settings
 const savedTheme = localStorage.getItem('herdr_theme') || 'nord';
+const savedTerminalFontSize = localStorage.getItem('herdr_terminal_font_size') || localStorage.getItem('herdr_home_font_size') || 'compact';
 applyTheme(savedTheme);
+applyTerminalFontSize(savedTerminalFontSize);
+renderCodexStatusLineSetting();
 renderRelayList();
 
 function applyTheme(t) {
@@ -205,10 +245,46 @@ function applyTheme(t) {
 function renderThemeGrid() {
   const cur = localStorage.getItem('herdr_theme') || 'dark';
   document.getElementById('themeGrid').innerHTML = THEMES.map(t =>
-    `<button class="theme-btn ${t===cur?'active':''}" onclick="applyTheme('${t}')">${t}</button>`
+    `<button class="theme-btn ${t===cur?'active':''}" aria-pressed="${t===cur}" onclick="applyTheme('${t}')">${t===cur?'✓ ':''}${t}</button>`
   ).join('');
 }
 renderThemeGrid();
+
+function applyTerminalFontSize(size) {
+  const next = TERMINAL_FONT_SIZES.includes(size) ? size : 'compact';
+  document.documentElement.setAttribute('data-terminal-font', next);
+  localStorage.setItem('herdr_terminal_font_size', next);
+  renderFontGrid();
+}
+
+function renderFontGrid() {
+  const cur = localStorage.getItem('herdr_terminal_font_size') || localStorage.getItem('herdr_home_font_size') || 'compact';
+  document.getElementById('fontGrid').innerHTML = TERMINAL_FONT_SIZES.map(size =>
+    `<button class="font-btn ${size===cur?'active':''}" data-size="${size}" aria-pressed="${size===cur}" onclick="applyTerminalFontSize('${size}')">${size===cur?'✓ ':''}${size}</button>`
+  ).join('');
+}
+renderFontGrid();
+
+function isMobileViewport() {
+  return window.matchMedia && window.matchMedia('(max-width: 767px)').matches;
+}
+
+function codexStatusLineVisible() {
+  const saved = localStorage.getItem(CODEX_STATUS_LINE_KEY);
+  if (saved !== null) return saved === 'true';
+  return !isMobileViewport();
+}
+
+function setCodexStatusLineVisible(visible) {
+  localStorage.setItem(CODEX_STATUS_LINE_KEY, visible ? 'true' : 'false');
+  renderCodexStatusLineSetting();
+  if (activePane) refreshPane();
+}
+
+function renderCodexStatusLineSetting() {
+  const toggle = document.getElementById('codexStatusLineToggle');
+  if (toggle) toggle.checked = codexStatusLineVisible();
+}
 
 function loadRelayConfigs() {
   const raw = localStorage.getItem('herdr_relays');
@@ -378,6 +454,7 @@ function showAgentListView() {
   currentView = 'agents';
   activePane = null;
   clearInterval(refreshInterval);
+  updateAppChrome();
   document.getElementById('settingsView').style.display = 'none';
   document.getElementById('terminalView').classList.remove('active');
   document.getElementById('agentListView').style.display = '';
@@ -387,6 +464,7 @@ function showSettingsView() {
   currentView = 'settings';
   activePane = null;
   clearInterval(refreshInterval);
+  updateAppChrome('Settings');
   document.getElementById('terminalView').classList.remove('active');
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('settingsView').style.display = 'block';
@@ -473,7 +551,7 @@ function updateStatusDot() {
 function showSetup() {
   document.getElementById('agents').innerHTML = `<div class="empty">
     <p style="font-size:1.5rem;margin-bottom:12px">🐑</p>
-    <p><strong>herdr-remote</strong></p>
+    <p><strong>Herdr Mobile Relay</strong></p>
     <p style="margin-top:8px">Monitor & approve agents from your phone</p>
     <p style="margin-top:16px;font-size:0.75rem;color:var(--muted);text-align:left;max-width:280px;margin-left:auto;margin-right:auto">
       <strong>Connect your own:</strong><br>
@@ -550,12 +628,38 @@ function agentsSignature(list) {
 
 function updateTerminalContent(content, format) {
   const term = document.getElementById('termContent');
+  const displayContent = terminalDisplayContent(content);
   const distanceFromBottom = term.scrollHeight - term.scrollTop - term.clientHeight;
   const shouldStickToBottom = distanceFromBottom < 48;
   const previousScrollTop = term.scrollTop;
-  if (format === 'ansi') term.innerHTML = ansiToHtml(content);
-  else term.textContent = content;
+  if (format === 'ansi') term.innerHTML = ansiToHtml(displayContent);
+  else term.textContent = displayContent;
   term.scrollTop = shouldStickToBottom ? term.scrollHeight : previousScrollTop;
+}
+
+function terminalDisplayContent(content) {
+  if (codexStatusLineVisible()) return content;
+  return String(content ?? '').split('\n').filter(line => !isAgentStatusLine(line)).join('\n');
+}
+
+function isAgentStatusLine(line) {
+  return isCodexStatusLine(line) || isClaudeStatusLine(line);
+}
+
+function isCodexStatusLine(line) {
+  const clean = stripAnsi(line).replace(/\s+/g, ' ').trim();
+  return /\bContext\s+\d+%\s+used\b/i.test(clean) && /\bgpt[-\w.]*/i.test(clean);
+}
+
+function isClaudeStatusLine(line) {
+  const clean = stripAnsi(line).replace(/\s+/g, ' ').trim();
+  const hasClaudeModel = /\b(claude|sonnet|opus|haiku|fable|mythos)\b/i.test(clean);
+  const looksLikeStatusBar = /[·|•]/.test(clean) || /(^|\s)[.~]?\//.test(clean);
+  return /\bctx\s+\d+%\b/i.test(clean) && (hasClaudeModel || looksLikeStatusBar);
+}
+
+function stripAnsi(text) {
+  return String(text ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
 function escapeHtml(text) {
@@ -664,10 +768,13 @@ function openTerminal(paneId) {
 
 function showTerminalView(paneId) {
   activePane = paneId;
+  lastInsertedBackspaces = 0;
   currentView = 'terminal';
   clearInterval(refreshInterval);
   const a = agents.find(x => x.pane_id===paneId);
-  document.getElementById('termTitle').textContent = a?`${a.project || a.agent} · ${a.agent} @${hostLabel(a)}`:paneId;
+  const title = a ? terminalTitle(a) : paneId;
+  updateAppChrome(title);
+  document.getElementById('termTitle').textContent = title;
   document.getElementById('settingsView').style.display = 'none';
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('terminalView').classList.add('active');
@@ -694,6 +801,16 @@ function closeTerminal() {
   closeCurrentView();
 }
 
+function terminalTitle(agent) {
+  const name = agent.project || agent.agent || 'agent';
+  return `${name} @${hostLabel(agent)}`;
+}
+
+function updateAppChrome(title = '🐑 herdr') {
+  document.body.dataset.view = currentView;
+  document.getElementById('appTitle').textContent = title;
+}
+
 function activeAgent() {
   return activePane ? agents.find(x => x.pane_id === activePane) : null;
 }
@@ -710,17 +827,39 @@ function sendToActive(payload) {
 function refreshPane() { sendToActive({type:'read_pane',lines:TERMINAL_HISTORY_LINES,format:'ansi'}); }
 function sendText() {
   const i=document.getElementById('termInput');
-  if(!i.value||!activePane)return;
-  if (!sendToActive({type:'send_text',text:i.value})) return;
+  const text=i.value;
+  if(!text||!activePane)return;
+  if (!sendToActive({type:'send_text',text})) return;
   sendToActive({type:'send_keys',keys:['Enter']});
-  i.value=''; setTimeout(refreshPane,500);
+  lastInsertedBackspaces += text.length + 1;
+  i.value=''; resizeComposer(); setTimeout(refreshPane,500);
+}
+function resizeComposer(){
+  const i=document.getElementById('termInput');
+  if(!i)return;
+  i.style.height='auto';
+  i.style.height=Math.min(i.scrollHeight,120)+'px';
 }
 function sendKey(k){if(!activePane)return;sendToActive({type:'send_keys',keys:[k]});setTimeout(refreshPane,300);}
 function sendKeys(k){if(!activePane)return;sendToActive({type:'send_keys',keys:k});setTimeout(refreshPane,300);}
-function toggleArrows(){document.getElementById('arrowPopup').classList.toggle('show');}
+function submitPrompt(){lastInsertedBackspaces=0;sendKey('Tab');}
+function cancelPrompt(){lastInsertedBackspaces=0;sendKey('Escape');}
+function interruptPrompt(){lastInsertedBackspaces=0;sendKeys(['Ctrl+c']);}
+function clearPromptText(){
+  const i=document.getElementById('termInput');
+  if(i){i.value='';resizeComposer();}
+  if(!activePane)return;
+  const keys=lastInsertedBackspaces ? Array(lastInsertedBackspaces).fill('Backspace') : ['Ctrl+e','Ctrl+u'];
+  lastInsertedBackspaces=0;
+  sendKeys(keys);
+}
+function toggleArrows(event){
+  if(event) event.stopPropagation();
+  document.getElementById('arrowPopup').classList.toggle('show');
+}
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
 function respond(t){if(!activePane)return;if(!sendToActive({type:'respond',text:t}))return;document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
-document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing&&e.keyCode!==229){e.preventDefault();sendText();}}); // IME confirmation also emits Enter; do not submit while composing.
+document.addEventListener('click', hideArrows);
 
 window.addEventListener('popstate', event => {
   const state = event.state && event.state.herdrView ? event.state : {view: 'agents', index: 0};

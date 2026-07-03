@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "🐑 herdr-remote relay setup"
+echo "🐑 Herdr Mobile Relay setup"
 echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

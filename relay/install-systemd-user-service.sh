@@ -1,12 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-LABEL="herdr-remote.service"
+LABEL="herdr-mobile-relay.service"
+LEGACY_LABEL="herdr-remote.service"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_FILE="$UNIT_DIR/$LABEL"
+LEGACY_UNIT_FILE="$UNIT_DIR/$LEGACY_LABEL"
 
 export PATH="$HOME/.local/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
@@ -25,7 +27,7 @@ if [ -f "$ENV_FILE" ]; then
     set +a
 fi
 
-CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config-herdr-remote.yml}"
+CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config-herdr-mobile-relay.yml}"
 
 ensure_env() {
     if [ ! -f "$ENV_FILE" ]; then
@@ -74,12 +76,12 @@ if [ ! -r "$CLOUDFLARED_CONFIG" ]; then
 fi
 
 ensure_env
-chmod +x "$SCRIPT_DIR/herdr-remote-service.sh"
+chmod +x "$SCRIPT_DIR/herdr-mobile-relay-service.sh"
 mkdir -p "$UNIT_DIR"
 
 cat > "$UNIT_FILE" <<EOF
 [Unit]
-Description=herdr-remote relay and Cloudflare tunnel
+Description=Herdr Mobile Relay and Cloudflare tunnel
 After=network-online.target
 Wants=network-online.target
 
@@ -87,7 +89,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$REPO_DIR
 Environment=HERDR_RELAY_ENV=$ENV_FILE
-ExecStart=$SCRIPT_DIR/herdr-remote-service.sh
+ExecStart=$SCRIPT_DIR/herdr-mobile-relay-service.sh
 Restart=on-failure
 RestartSec=10
 
@@ -95,6 +97,9 @@ RestartSec=10
 WantedBy=default.target
 EOF
 
+systemctl --user daemon-reload
+systemctl --user disable --now "$LEGACY_LABEL" >/dev/null 2>&1 || true
+rm -f "$LEGACY_UNIT_FILE"
 systemctl --user daemon-reload
 systemctl --user enable --now "$LABEL"
 

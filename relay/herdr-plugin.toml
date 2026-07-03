@@ -1,8 +1,8 @@
-id = "herdr-remote.relay"
-name = "Herdr Remote Relay"
+id = "herdr-mobile-relay.events"
+name = "Herdr Mobile Relay Events"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Push agent events to the local herdr-remote relay via UDP"
+description = "Push local Herdr agent events to Herdr Mobile Relay"
 platforms = ["macos", "linux"]
 
 [[events]]

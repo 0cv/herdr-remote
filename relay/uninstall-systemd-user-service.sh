@@ -1,11 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-LABEL="herdr-remote.service"
-UNIT_FILE="$HOME/.config/systemd/user/$LABEL"
+LABELS=("herdr-mobile-relay.service" "herdr-remote.service")
 
-systemctl --user disable --now "$LABEL" >/dev/null 2>&1 || true
-rm -f "$UNIT_FILE"
+for label in "${LABELS[@]}"; do
+    systemctl --user disable --now "$label" >/dev/null 2>&1 || true
+    rm -f "$HOME/.config/systemd/user/$label"
+done
 systemctl --user daemon-reload
 
-echo "Stopped and removed $LABEL"
+echo "Stopped and removed Herdr Mobile Relay services"

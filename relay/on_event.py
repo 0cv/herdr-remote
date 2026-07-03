@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local plugin hook — pushes event to herdr-remote relay via UDP."""
+"""Local plugin hook for Herdr Mobile Relay."""
 import json, os, socket
 
 event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON", "{}"))

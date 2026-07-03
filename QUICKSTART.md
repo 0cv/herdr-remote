@@ -1,4 +1,4 @@
-# Quick Start
+# Herdr Mobile Relay Quick Start
 
 Get mobile approval for local herdr agents with a temporary Cloudflare quick tunnel.
 
@@ -25,7 +25,7 @@ To deploy the web app:
 
 ```bash
 cp .env.example .env
-# edit WEB_PROJECT in .env
+# edit WEB_PROJECT in .env if needed
 make web-deploy
 ```
 
@@ -35,11 +35,11 @@ For fixed `wss://` URLs, create one named Cloudflare tunnel and one DNS hostname
 
 ```bash
 cloudflared tunnel login
-cloudflared tunnel create herdr-remote-mac
-cloudflared tunnel route dns herdr-remote-mac relay-mac.yourdomain.com
+cloudflared tunnel create herdr-mobile-relay-mac
+cloudflared tunnel route dns herdr-mobile-relay-mac relay-mac.yourdomain.com
 
-cloudflared tunnel create herdr-remote-fedora
-cloudflared tunnel route dns herdr-remote-fedora relay-fedora.yourdomain.com
+cloudflared tunnel create herdr-mobile-relay-fedora
+cloudflared tunnel route dns herdr-mobile-relay-fedora relay-fedora.yourdomain.com
 ```
 
 Install the background service for the current computer:
@@ -59,14 +59,8 @@ Then use each computer's `wss://` hostname in the web app.
 Run one relay and one Cloudflare tunnel per computer. Give each computer a distinct hostname:
 
 ```text
-wss://relay-mac.150283.xyz
-wss://relay-fedora.150283.xyz
+wss://relay-mac.yourdomain.com
+wss://relay-fedora.yourdomain.com
 ```
 
 In the web app Settings, add both relay URLs. The browser connects to both relays directly and merges the agents on one page.
-
-On Fedora/Linux, install `cloudflared`, create `~/.cloudflared/config-herdr-remote.yml`, then run:
-
-```bash
-make linux-service-install
-```

@@ -3,7 +3,7 @@ include .env
 export
 endif
 
-WEB_PROJECT ?= herdr-remote
+WEB_PROJECT ?= herdr-mobile-relay
 PATH := /opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$(HOME)/.local/bin:$(PATH)
 export PATH
 
@@ -38,10 +38,10 @@ service-uninstall:
 	relay/uninstall-service.sh
 
 service-status:
-	launchctl print gui/$$(id -u)/com.herdr-remote.service
+	launchctl print gui/$$(id -u)/com.herdr-mobile-relay.service
 
 service-logs:
-	tail -f "$$HOME/Library/Logs/herdr-remote/service.log" "$$HOME/Library/Logs/herdr-remote/service.err"
+	tail -f "$$HOME/Library/Logs/herdr-mobile-relay/service.log" "$$HOME/Library/Logs/herdr-mobile-relay/service.err"
 
 linux-service-install:
 	relay/install-systemd-user-service.sh
@@ -50,10 +50,10 @@ linux-service-uninstall:
 	relay/uninstall-systemd-user-service.sh
 
 linux-service-status:
-	systemctl --user status herdr-remote.service
+	systemctl --user status herdr-mobile-relay.service
 
 linux-service-logs:
-	journalctl --user -u herdr-remote.service -f
+	journalctl --user -u herdr-mobile-relay.service -f
 
 web-deploy:
 	npx wrangler pages deploy web --project-name "$(WEB_PROJECT)"

@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["websockets>=14.0"]
 # ///
-"""herdr-remote relay — polls local herdr and broadcasts to clients."""
+"""Herdr Mobile Relay server — polls local herdr and broadcasts to clients."""
 import asyncio, json, os, re, shutil, signal, socket, subprocess
 
 try:
@@ -271,7 +271,7 @@ async def main():
     asyncio.create_task(poll_loop())
     asyncio.create_task(event_push())
     server = await serve(handle_client, "0.0.0.0", WS_PORT, process_request=process_request)
-    print(f"herdr-remote relay on :{WS_PORT} (WebSocket + HTTP GET push)")
+    print(f"Herdr Mobile Relay on :{WS_PORT} (WebSocket + HTTP GET push)")
     print(f"  polling: {LOCAL_HOST}")
     stop = loop.create_future()
     def request_stop():

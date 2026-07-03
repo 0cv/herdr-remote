@@ -1,12 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-LABEL="com.herdr-remote.service"
+LABEL="com.herdr-mobile-relay.service"
+LEGACY_LABEL="com.herdr-remote.service"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="$HOME/Library/Logs/herdr-remote"
-CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config-herdr-remote.yml}"
+LEGACY_PLIST="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
+LOG_DIR="$HOME/Library/Logs/herdr-mobile-relay"
+CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config-herdr-mobile-relay.yml}"
 
 generate_token() {
     if command -v openssl >/dev/null 2>&1; then
@@ -47,7 +49,7 @@ if [ ! -r "$CLOUDFLARED_CONFIG" ]; then
 fi
 
 ensure_env
-chmod +x "$SCRIPT_DIR/herdr-remote-service.sh"
+chmod +x "$SCRIPT_DIR/herdr-mobile-relay-service.sh"
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 
 cat > "$PLIST" <<EOF
@@ -59,7 +61,7 @@ cat > "$PLIST" <<EOF
     <string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$SCRIPT_DIR/herdr-remote-service.sh</string>
+        <string>$SCRIPT_DIR/herdr-mobile-relay-service.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -82,6 +84,8 @@ cat > "$PLIST" <<EOF
 </plist>
 EOF
 
+launchctl bootout "gui/$UID" "$LEGACY_PLIST" >/dev/null 2>&1 || true
+rm -f "$LEGACY_PLIST"
 launchctl bootout "gui/$UID" "$PLIST" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$UID" "$PLIST"
 launchctl enable "gui/$UID/$LABEL"
