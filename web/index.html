@@ -120,6 +120,15 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
 
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 0.85rem; }
 
+/* Device lock */
+.lock-screen { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,0.84); backdrop-filter: blur(8px); }
+.lock-screen.active { display: flex; }
+.lock-panel { width: min(360px, 100%); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px; box-shadow: 0 16px 60px rgba(0,0,0,0.45); }
+.lock-panel h2 { font-size: 1rem; margin-bottom: 8px; }
+.lock-panel p { color: var(--muted); font-size: 0.75rem; line-height: 1.45; margin-bottom: 12px; }
+.lock-panel button { width: 100%; padding: 12px 14px; border-radius: 6px; border: none; background: var(--green); color: #050505; font-weight: 700; font-size: 0.8rem; cursor: pointer; }
+.lock-status { min-height: 1rem; margin-top: 10px; color: var(--muted); font-size: 0.68rem; }
+
 /* Desktop */
 @media (min-width: 768px) {
   body { max-width: 1200px; margin: 0 auto; }
@@ -145,6 +154,15 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
   <h1 id="appTitle">🐑 herdr</h1>
   <span id="agentCount" style="font-size:0.7rem;color:var(--muted)"></span>
   <button id="settingsButton" onclick="toggleSettings()" aria-label="Settings">⚙</button>
+</div>
+
+<div class="lock-screen" id="lockScreen" role="dialog" aria-modal="true" aria-labelledby="lockTitle" aria-describedby="lockDescription">
+  <div class="lock-panel">
+    <h2 id="lockTitle">Unlock Herdr</h2>
+    <p id="lockDescription">Verify with your device fingerprint, face unlock, or passcode before connecting to relays.</p>
+    <button id="lockUnlockButton" onclick="unlockWithDevice()">Unlock</button>
+    <div class="lock-status" id="lockStatus"></div>
+  </div>
 </div>
 
 <div class="settings" id="settingsView">
@@ -175,6 +193,14 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
       <span>Show Agent Status Line</span>
       <input id="codexStatusLineToggle" type="checkbox" onchange="setCodexStatusLineVisible(this.checked)" />
     </label>
+  </div>
+  <div class="setting-group">
+    <label>Security</label>
+    <label class="toggle-row">
+      <span>Require Fingerprint / Device Unlock</span>
+      <input id="deviceLockToggle" type="checkbox" onchange="setDeviceVerificationRequired(this.checked)" />
+    </label>
+    <div class="hint" id="deviceLockHint">Uses this browser's platform authenticator. Requires HTTPS.</div>
   </div>
   <div class="setting-group">
     <label>Status</label>
@@ -221,6 +247,8 @@ const THEMES = ['dark','light','nord','solarized','rose'];
 const TERMINAL_FONT_SIZES = ['compact','regular','large'];
 const TERMINAL_HISTORY_LINES = 500;
 const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
+const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
+const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
   34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
@@ -228,6 +256,7 @@ const ANSI_COLORS = {
   94: '#80bfff', 95: '#ff80ff', 96: '#80ffff', 97: '#fff'
 };
 let relayConfigs = loadRelayConfigs(), connections = new Map(), agents = [], activePane = null, refreshInterval = null, lastAgentsSignature = '', currentView = 'agents', viewIndex = 0, lastInsertedBackspaces = 0;
+let securityLocked = false, unlockInProgress = false, pendingConnectAll = false;
 
 // Settings
 const savedTheme = localStorage.getItem('herdr_theme') || 'nord';
@@ -235,6 +264,7 @@ const savedTerminalFontSize = localStorage.getItem('herdr_terminal_font_size') |
 applyTheme(savedTheme);
 applyTerminalFontSize(savedTerminalFontSize);
 renderCodexStatusLineSetting();
+renderDeviceVerificationSetting();
 renderRelayList();
 
 function applyTheme(t) {
@@ -284,6 +314,217 @@ function setCodexStatusLineVisible(visible) {
 function renderCodexStatusLineSetting() {
   const toggle = document.getElementById('codexStatusLineToggle');
   if (toggle) toggle.checked = codexStatusLineVisible();
+}
+
+function deviceVerificationSupported() {
+  return Boolean(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
+}
+
+function deviceVerificationEnabled() {
+  return localStorage.getItem(DEVICE_LOCK_KEY) === 'true' && Boolean(localStorage.getItem(DEVICE_CREDENTIAL_KEY));
+}
+
+function renderDeviceVerificationSetting() {
+  const toggle = document.getElementById('deviceLockToggle');
+  const hint = document.getElementById('deviceLockHint');
+  const enabled = deviceVerificationEnabled();
+  if (toggle) toggle.checked = enabled;
+  if (!hint) return;
+  if (!deviceVerificationSupported()) {
+    hint.textContent = 'Device verification needs HTTPS and a browser with WebAuthn support.';
+  } else if (enabled) {
+    hint.textContent = 'The app will ask for device verification on open, reload, and resume before reconnecting relays.';
+  } else {
+    hint.textContent = "Uses this browser's platform authenticator. Requires HTTPS.";
+  }
+}
+
+async function setDeviceVerificationRequired(required) {
+  if (!required) {
+    localStorage.removeItem(DEVICE_LOCK_KEY);
+    localStorage.removeItem(DEVICE_CREDENTIAL_KEY);
+    securityLocked = false;
+    pendingConnectAll = false;
+    hideLockScreen();
+    renderDeviceVerificationSetting();
+    return;
+  }
+  await enrollDeviceVerification();
+}
+
+async function enrollDeviceVerification() {
+  renderDeviceVerificationSetting();
+  if (!deviceVerificationSupported()) {
+    showDeviceLockHint('Device verification needs HTTPS and WebAuthn support.');
+    renderDeviceVerificationSetting();
+    return false;
+  }
+  try {
+    showDeviceLockHint('Creating a device verification credential...');
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: randomBytes(32),
+        rp: { name: 'Herdr Mobile Relay' },
+        user: {
+          id: randomBytes(16),
+          name: 'local-device',
+          displayName: 'This device',
+        },
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 },
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          userVerification: 'required',
+        },
+        timeout: 60000,
+        attestation: 'none',
+      },
+    });
+    if (!credential || !credential.rawId) throw new Error('No credential returned');
+    localStorage.setItem(DEVICE_CREDENTIAL_KEY, base64UrlEncode(credential.rawId));
+    localStorage.setItem(DEVICE_LOCK_KEY, 'true');
+    showDeviceLockHint('Device verification is enabled.');
+    renderDeviceVerificationSetting();
+    return true;
+  } catch (_err) {
+    localStorage.removeItem(DEVICE_LOCK_KEY);
+    localStorage.removeItem(DEVICE_CREDENTIAL_KEY);
+    showDeviceLockHint('Device verification was cancelled or failed.');
+    renderDeviceVerificationSetting();
+    return false;
+  }
+}
+
+function showDeviceLockHint(message) {
+  const hint = document.getElementById('deviceLockHint');
+  if (hint) hint.textContent = message;
+}
+
+function randomBytes(length) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function base64UrlEncode(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value) {
+  const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function startAppConnections() {
+  if (deviceVerificationEnabled() && securityLocked) {
+    pendingConnectAll = true;
+    showLockScreen('open');
+    return;
+  }
+  if (relayConfigs.length) setTimeout(connectAll, 100);
+  else showSetup();
+}
+
+function showLockScreen(reason = 'open') {
+  const screen = document.getElementById('lockScreen');
+  const desc = document.getElementById('lockDescription');
+  if (desc) {
+    desc.textContent = reason === 'resume'
+      ? 'Verify before reconnecting relays after the page was paused.'
+      : 'Verify with your device fingerprint, face unlock, or passcode before connecting to relays.';
+  }
+  if (screen) screen.classList.add('active');
+}
+
+function hideLockScreen() {
+  const screen = document.getElementById('lockScreen');
+  if (screen) screen.classList.remove('active');
+  setLockStatus('');
+}
+
+function setLockStatus(message) {
+  const status = document.getElementById('lockStatus');
+  if (status) status.textContent = message;
+}
+
+function lockForDevice(reason = 'resume') {
+  if (!deviceVerificationEnabled() || securityLocked) return;
+  securityLocked = true;
+  pendingConnectAll = true;
+  for (const id of [...connections.keys()]) disconnectRelay(id);
+  updateStatusDot();
+  renderRelayList();
+  showLockScreen(reason);
+}
+
+async function requireDeviceUnlock(reason = 'open') {
+  if (!deviceVerificationEnabled()) return true;
+  securityLocked = true;
+  pendingConnectAll = true;
+  showLockScreen(reason);
+  return unlockWithDevice(reason);
+}
+
+async function unlockWithDevice(reason = 'manual') {
+  if (!deviceVerificationEnabled()) {
+    unlockSucceeded();
+    return true;
+  }
+  if (!deviceVerificationSupported()) {
+    showLockScreen(reason);
+    setLockStatus('Device verification needs HTTPS and WebAuthn support.');
+    return false;
+  }
+  if (unlockInProgress) return false;
+  const credentialId = localStorage.getItem(DEVICE_CREDENTIAL_KEY);
+  if (!credentialId) {
+    setLockStatus('No device credential is enrolled. Disable and re-enable the setting.');
+    renderDeviceVerificationSetting();
+    return false;
+  }
+  unlockInProgress = true;
+  showLockScreen(reason);
+  setLockStatus('Waiting for device verification...');
+  try {
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: randomBytes(32),
+        allowCredentials: [{ type: 'public-key', id: base64UrlDecode(credentialId) }],
+        userVerification: 'required',
+        timeout: 60000,
+      },
+    });
+    if (!assertion) throw new Error('No assertion returned');
+    unlockSucceeded();
+    return true;
+  } catch (_err) {
+    setLockStatus('Verification was cancelled or failed. Tap Unlock to try again.');
+    return false;
+  } finally {
+    unlockInProgress = false;
+  }
+}
+
+function unlockSucceeded() {
+  securityLocked = false;
+  const shouldConnect = pendingConnectAll;
+  pendingConnectAll = false;
+  hideLockScreen();
+  renderDeviceVerificationSetting();
+  if (shouldConnect) connectAll();
+  else {
+    updateStatusDot();
+    renderRelayList();
+  }
 }
 
 function loadRelayConfigs() {
@@ -481,7 +722,12 @@ function stateFromLocation() {
 
 // Connection
 function connectAll() {
-  for (const id of connections.keys()) disconnectRelay(id);
+  if (deviceVerificationEnabled() && securityLocked) {
+    pendingConnectAll = true;
+    showLockScreen('open');
+    return;
+  }
+  for (const id of [...connections.keys()]) disconnectRelay(id);
   connections.clear();
   agents = [];
   lastAgentsSignature = '';
@@ -496,6 +742,11 @@ function connectAll() {
 }
 
 function connectRelay(relay) {
+  if (deviceVerificationEnabled() && securityLocked) {
+    pendingConnectAll = true;
+    showLockScreen('open');
+    return;
+  }
   disconnectRelay(relay.id);
   const conn = { relay, ws: null, status: 'connecting', reconnectTimer: null, closed: false };
   connections.set(relay.id, conn);
@@ -516,7 +767,11 @@ function connectRelay(relay) {
     removeAgentsForRelay(relay.id);
     updateStatusDot();
     renderRelayList();
-    if (!conn.closed) conn.reconnectTimer = setTimeout(() => connectRelay(relay), 3000);
+    if (!conn.closed && deviceVerificationEnabled() && document.visibilityState !== 'visible') {
+      lockForDevice('resume');
+      return;
+    }
+    if (!conn.closed && !securityLocked) conn.reconnectTimer = setTimeout(() => connectRelay(relay), 3000);
   };
   ws.onerror = () => {
     conn.status = 'disconnected';
@@ -874,7 +1129,28 @@ function initializeView() {
 }
 
 initializeView();
-if (relayConfigs.length) setTimeout(connectAll, 100); else showSetup();
+if (deviceVerificationEnabled()) requireDeviceUnlock('open');
+else startAppConnections();
+
+document.addEventListener('visibilitychange', () => {
+  if (!deviceVerificationEnabled()) return;
+  if (document.visibilityState === 'hidden') {
+    lockForDevice('resume');
+  } else if (securityLocked) {
+    setTimeout(() => unlockWithDevice('resume'), 150);
+  }
+});
+
+window.addEventListener('pageshow', event => {
+  if (!event.persisted || !deviceVerificationEnabled()) return;
+  lockForDevice('resume');
+  setTimeout(() => unlockWithDevice('resume'), 150);
+});
+
+window.addEventListener('focus', () => {
+  if (!deviceVerificationEnabled() || !securityLocked || document.visibilityState !== 'visible') return;
+  setTimeout(() => unlockWithDevice('resume'), 150);
+});
 </script>
 </body>
 </html>
