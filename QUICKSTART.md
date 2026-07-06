@@ -46,7 +46,7 @@ Install the background service for the current computer:
 
 ```bash
 # macOS
-make service-install
+make macos-service-install
 
 # Fedora/Linux
 make linux-service-install

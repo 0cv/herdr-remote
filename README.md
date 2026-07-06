@@ -162,10 +162,10 @@ The background service starts both the relay and `cloudflared`.
 On macOS:
 
 ```bash
-make service-install
-make service-status
-make service-logs
-make service-uninstall
+make macos-service-install
+make macos-service-status
+make macos-service-logs
+make macos-service-uninstall
 ```
 
 On Fedora/Linux:
