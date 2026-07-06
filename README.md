@@ -6,8 +6,8 @@ Herdr Mobile Relay runs a small local relay on each computer, exposes each relay
 
 ## Screenshots
 
-| Agents | Terminal | Settings |
-| --- | --- | --- |
+| Agents                                                                                                             | Terminal                                                                                                                 | Settings                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
 | <img src="images/home.jpeg" alt="Mobile home page showing Mac and Fedora agents merged into one list" width="240"> | <img src="images/terminal.jpeg" alt="Mobile terminal view for a Fedora agent with multiline input controls" width="240"> | <img src="images/settings.jpeg" alt="Mobile settings page with Mac and Fedora relay configuration" width="240"> |
 
 ## Attribution
@@ -73,13 +73,33 @@ Open your deployed web app on your phone and add that `wss://...trycloudflare.co
 
 The web app is static and lives in `web/`.
 
-Deploy it anywhere that can host static files. With Cloudflare Pages direct upload:
+Deploy it anywhere that can host static files over HTTPS. With Cloudflare Pages direct upload:
 
 ```bash
 cp .env.example .env
 # edit WEB_PROJECT in .env
 make web-deploy
 ```
+
+### Install on Your Phone
+
+Install the deployed web app URL, not a `wss://` relay URL. The installed app keeps your relay settings in browser local storage.
+
+On iPhone or iPad:
+
+1. Open the deployed Herdr Mobile Relay web app in Safari.
+2. Tap Share.
+3. Tap Add to Home Screen.
+4. Tap Add.
+
+On Android:
+
+1. Open the deployed Herdr Mobile Relay web app in Chrome.
+2. Tap the install prompt, or open the three-dot menu.
+3. Tap Install app or Add to Home screen.
+4. Confirm the install.
+
+The app includes a web manifest and Apple touch icon, so it installs with the Herdr Relay icon.
 
 In the app Settings, add one relay entry per computer:
 
