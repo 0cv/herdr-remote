@@ -40,14 +40,6 @@ LOCAL_HOST = socket.gethostname().split(".")[0] or "local"
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
-RESPONSE_KEYS = {
-    "yes, single permission": "y",
-    "trust, always allow": "a",
-    "no (tab to edit)": "n",
-    "approve all pending": "a",
-    "configure individually": "c",
-    "exit (cancel subagents)": "e",
-}
 CHROME_RE = re.compile(
     r"^[\s─━═_—│|◔◑◕●\s]+$"
     r"|Kiro\s[·•]"
@@ -140,13 +132,19 @@ def detect_options(text):
     return None
 
 
-def response_key(value):
-    key = (value or "").strip().lower()
-    if key in RESPONSE_KEYS:
-        return RESPONSE_KEYS[key]
-    if len(key) == 1 and key.isalnum():
-        return key
-    return None
+def respond_keys(index, total=None):
+    """Keys that select option `index` in an agent's approval menu.
+
+    Codex and Claude Code both render approvals as an arrow-navigable list with
+    option 1 pre-highlighted, so plain letters like "y" are ignored. Selecting by
+    position works across both: Enter confirms the first (Yes) option, Esc cancels
+    the last (No/exit) option, and Down×n + Enter reaches anything in between.
+    """
+    if index <= 0:
+        return ["Enter"]
+    if isinstance(total, int) and index >= total - 1:
+        return ["Escape"]
+    return ["Down"] * index + ["Enter"]
 
 
 async def broadcast(msg):
@@ -330,9 +328,10 @@ async def handle_client(ws):
             msg_type = msg.get("type")
             if msg_type == "respond":
                 pane_id = msg.get("pane_id")
-                key = response_key(msg.get("key") or msg.get("text"))
-                if pane_id and key:
-                    await run_herdr_async("pane", "send-text", pane_id, key)
+                index = msg.get("index")
+                if pane_id and isinstance(index, int) and index >= 0:
+                    keys = respond_keys(index, msg.get("total"))
+                    await run_herdr_async("pane", "send-keys", pane_id, *keys)
             elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
             elif msg_type == "read_pane":

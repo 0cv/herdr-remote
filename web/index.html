@@ -110,9 +110,6 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
 .term-keys { position: relative; z-index: 2; border-top: 1px solid var(--border); padding: 3px 6px; display: flex; gap: 3px; background: var(--surface); flex-shrink: 0; padding-bottom: max(3px, env(safe-area-inset-bottom, 0px)); align-items: center; overflow: visible; }
 .term-keys button { padding: 5px 8px; min-height: 28px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11px; cursor: pointer; white-space: nowrap; }
 .term-keys button:active { background: var(--border); }
-.term-keys button.key-green { border-color: var(--green); color: var(--green); }
-.term-keys button.key-blue { border-color: var(--blue); color: var(--blue); }
-.term-keys button.key-red { border-color: var(--red); color: var(--red); }
 .term-keys button.key-send { border-color: var(--green); color: var(--green); font-weight: 700; }
 .term-keys button.key-clear { border-color: var(--orange); color: var(--orange); font-weight: 700; }
 .term-keys .spacer { flex: 1; }
@@ -233,7 +230,6 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
     <button class="key-clear" onclick="clearPromptText()" aria-label="Clear prompt text">Clear</button>
     <button onclick="cancelPrompt()">Esc</button>
     <button onclick="interruptPrompt()">^C</button>
-    <span id="actionKeys"></span>
     <span class="spacer"></span>
     <div class="arrow-toggle">
       <button onclick="toggleArrows(event)" aria-label="Arrow keys">↕</button>
@@ -253,14 +249,6 @@ const TERMINAL_HISTORY_LINES = 500;
 const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
 const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
-const RESPONSE_KEYS = {
-  'yes, single permission': 'y',
-  'trust, always allow': 'a',
-  'no (tab to edit)': 'n',
-  'approve all pending': 'a',
-  'configure individually': 'c',
-  'exit (cancel subagents)': 'e'
-};
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
   34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
@@ -1109,26 +1097,15 @@ function showTerminalView(paneId) {
 
 function renderTerminalActions(agent) {
   const qa = document.getElementById('quickActions');
-  const ak = document.getElementById('actionKeys');
   if (agent&&agent.status==='blocked') {
     const opts = agent.options||['yes, single permission','trust, always allow','no (tab to edit)'];
-    qa.innerHTML = opts.map(o => {
+    const total = opts.length;
+    qa.innerHTML = opts.map((o, i) => {
       const cls = o.includes('yes')||o.includes('approve')?'btn-yes':o.includes('trust')?'btn-trust':'btn-no';
-      const key = responseKey(o);
-      if (!key) return '';
-      const arg = escapeHtml(JSON.stringify(key));
-      return `<button class="${cls}" onclick='respond(${arg})'>${escapeHtml(o.split(',')[0])}</button>`;
-    }).join('');
-    ak.innerHTML = opts.map(o => {
-      const key = responseKey(o);
-      if (!key) return '';
-      const cls = o.includes('yes')||o.includes('approve')?'key-green':o.includes('trust')?'key-blue':'key-red';
-      const arg = escapeHtml(JSON.stringify(key));
-      return `<button class="${cls}" onclick='respond(${arg})'>${escapeHtml(key)}</button>`;
+      return `<button class="${cls}" onclick='respond(${i}, ${total})'>${escapeHtml(o.split(',')[0])}</button>`;
     }).join('');
   } else {
     qa.innerHTML='';
-    ak.innerHTML='';
   }
 }
 
@@ -1248,16 +1225,10 @@ function toggleArrows(event){
   document.getElementById('arrowPopup').classList.toggle('show');
 }
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
-function responseKey(value){
-  const key=String(value||'').trim().toLowerCase();
-  if(RESPONSE_KEYS[key])return RESPONSE_KEYS[key];
-  return key.length===1&&/^[a-z0-9]$/.test(key)?key:null;
-}
-function respond(t){
+function respond(index, total){
   if(!activePane)return;
-  const key=responseKey(t);
-  if(!key)return;
-  if(!sendToActive({type:'respond',key,text:key}))return;
+  if(typeof index!=='number'||index<0)return;
+  if(!sendToActive({type:'respond',index,total}))return;
   document.getElementById('quickActions').innerHTML='';
   setTimeout(refreshPane,500);
 }
