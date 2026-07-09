@@ -15,12 +15,13 @@ self.addEventListener('push', event => {
   }
 
   const title = payload.title || 'Herdr agent blocked';
+  const iconUrl = new URL('icons/icon-192.png', self.location.origin + '/').href;
   const options = {
     body: payload.body || 'An agent needs approval.',
     tag: payload.tag || 'herdr-blocked',
     renotify: true,
-    icon: 'icons/icon-192.png',
-    badge: 'icons/icon-192.png',
+    icon: iconUrl,
+    badge: iconUrl,
     data: {
       url: payload.url || './',
     },
@@ -31,12 +32,12 @@ self.addEventListener('push', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  const url = new URL(event.notification.data && event.notification.data.url || './', self.registration.scope).href;
+  const url = new URL(event.notification.data && event.notification.data.url || './', self.location.origin + '/').href;
 
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
     for (const client of windows) {
-      if (client.url.startsWith(self.registration.scope)) {
+      if (client.url.startsWith(self.location.origin)) {
         if ('navigate' in client) await client.navigate(url);
         return client.focus();
       }

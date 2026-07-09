@@ -283,13 +283,26 @@ def valid_push_subscription(subscription):
     return bool(endpoint and isinstance(keys, dict) and keys.get("p256dh") and keys.get("auth"))
 
 
-def store_push_subscription(subscription, user_agent=""):
+def store_push_subscription(subscription, user_agent="", client_id="", replace_endpoints=None):
     if not valid_push_subscription(subscription):
         return False
     endpoint = push_subscription_endpoint(subscription)
-    subscriptions = [s for s in load_push_subscriptions() if push_subscription_endpoint(s.get("subscription", {})) != endpoint]
+    client_id = client_id[:120] if isinstance(client_id, str) else ""
+    stale_endpoints = {
+        e for e in (replace_endpoints or [])
+        if isinstance(e, str) and e
+    }
+    stale_endpoints.add(endpoint)
+    subscriptions = [
+        s for s in load_push_subscriptions()
+        if (
+            push_subscription_endpoint(s.get("subscription", {})) not in stale_endpoints
+            and not (client_id and s.get("client_id") == client_id)
+        )
+    ]
     subscriptions.append({
         "subscription": subscription,
+        "client_id": client_id,
         "user_agent": user_agent[:240] if isinstance(user_agent, str) else "",
     })
     save_push_subscriptions(subscriptions)
@@ -569,7 +582,12 @@ async def handle_client(ws):
             elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
             elif msg_type == "push_subscribe":
-                ok = store_push_subscription(msg.get("subscription"), msg.get("user_agent", ""))
+                ok = store_push_subscription(
+                    msg.get("subscription"),
+                    msg.get("user_agent", ""),
+                    msg.get("client_id", ""),
+                    msg.get("replace_endpoints", []),
+                )
                 await ws.send(json.dumps({"type": "push_subscribed", "ok": ok}))
             elif msg_type == "read_pane":
                 pane_id = msg.get("pane_id")

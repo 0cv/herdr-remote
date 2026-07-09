@@ -266,7 +266,8 @@ const PROMPT_SKIP_RE = /^(?:bash command|do you want to proceed\??|would you lik
 const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
 const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
-const PUSH_VAPID_KEY = 'herdr_push_vapid_key';
+const PUSH_CLIENT_KEY = 'herdr_push_client_id';
+const PUSH_VAPID_KEY_PREFIX = 'herdr_push_vapid_key_';
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
   34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
@@ -278,6 +279,7 @@ let securityLocked = false, unlockInProgress = false, pendingConnectAll = false;
 let lastBlockedPaneIds = new Set();
 let respondingPaneIds = new Set();
 let serviceWorkerRegistration = null;
+let pushServiceWorkerRegistrations = new Map();
 let notificationSyncing = false;
 
 // Settings
@@ -368,7 +370,36 @@ async function registerServiceWorker() {
   }
 }
 
-async function readyServiceWorker() {
+function relayPushScope(relayId) {
+  const slug = String(relayId || 'default').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || 'relay';
+  return `./push/${slug}/`;
+}
+
+function relayVapidStorageKey(relayId) {
+  return `${PUSH_VAPID_KEY_PREFIX}${relayId}`;
+}
+
+function pushClientId() {
+  let value = localStorage.getItem(PUSH_CLIENT_KEY);
+  if (value) return value;
+  if (window.crypto && crypto.randomUUID) value = crypto.randomUUID();
+  else value = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(PUSH_CLIENT_KEY, value);
+  return value;
+}
+
+async function readyServiceWorker(relayId = null) {
+  if (relayId) {
+    if (pushServiceWorkerRegistrations.has(relayId)) return pushServiceWorkerRegistrations.get(relayId);
+    if (!('serviceWorker' in navigator)) return null;
+    try {
+      const registration = await navigator.serviceWorker.register('sw.js', {scope: relayPushScope(relayId)});
+      pushServiceWorkerRegistrations.set(relayId, registration);
+      return registration;
+    } catch (_err) {
+      return null;
+    }
+  }
   if (serviceWorkerRegistration) return serviceWorkerRegistration;
   await registerServiceWorker();
   if (!('serviceWorker' in navigator)) return null;
@@ -408,15 +439,17 @@ function renderNotificationSetting() {
     const failed = relays.some(conn => conn.pushStatus === 'failed');
     const missingConfig = relays.some(conn => conn.pushStatus === 'missing-config');
     const keyMismatch = relays.some(conn => conn.pushStatus === 'key-mismatch');
+    const allSynced = connectedRelays.length > 0 && synced === connectedRelays.length;
     button.disabled = notificationSyncing || connectedRelays.length === 0;
-    button.textContent = notificationSyncing ? 'Syncing Push...' : 'Sync Push Subscription';
+    button.textContent = notificationSyncing ? 'Syncing Push...' : allSynced ? 'Push Synced' : 'Sync Push Subscription';
     if (notificationSyncing) hint.textContent = 'Sending this browser push subscription to connected relays.';
     else if (connectedRelays.length === 0) hint.textContent = 'Connect a relay before syncing push notifications.';
     else if (missingConfig) hint.textContent = 'Waiting for the relay push key. Reconnect the relay if this stays here.';
     else if (keyMismatch) hint.textContent = 'This app has a subscription for another relay key. Share one VAPID key across relays or clear this site data.';
     else if (failed) hint.textContent = 'Push subscription sync failed. Reconnect the relay and try again.';
     else if (waiting) hint.textContent = 'Push subscription sent; waiting for relay confirmation.';
-    else if (synced) hint.textContent = `Push subscription synced with ${synced} relay${synced === 1 ? '' : 's'}.`;
+    else if (allSynced) hint.textContent = `Push subscription synced with ${synced} relay${synced === 1 ? '' : 's'}.`;
+    else if (synced) hint.textContent = `Push subscription synced with ${synced}/${connectedRelays.length} connected relays.`;
     else if (browserSubscribed) hint.textContent = 'This browser has an active push subscription. Sync it with the relay.';
     else hint.textContent = 'Push notifications can wake this app when an agent blocks.';
     return;
@@ -480,24 +513,26 @@ function setPushStatus(conn, status) {
 
 async function refreshPushSubscriptionState(relayId = null) {
   if (!pushSupported() || !notificationsEnabled()) return false;
-  const registration = await readyServiceWorker();
-  if (!registration || !registration.pushManager) return false;
-  try {
-    const subscription = await registration.pushManager.getSubscription();
-    const savedKey = localStorage.getItem(PUSH_VAPID_KEY) || '';
-    const targets = relayId ? [connections.get(relayId)].filter(Boolean) : [...connections.values()];
-    for (const conn of targets) {
+  const targets = relayId ? [connections.get(relayId)].filter(Boolean) : [...connections.values()];
+  let foundSubscription = false;
+  for (const conn of targets) {
+    const registration = await readyServiceWorker(conn.relay.id);
+    if (!registration || !registration.pushManager) continue;
+    try {
+      const subscription = await registration.pushManager.getSubscription();
+      const savedKey = localStorage.getItem(relayVapidStorageKey(conn.relay.id)) || '';
       if (!subscription) {
         if (['browser-subscribed', 'subscribed', 'sent'].includes(conn.pushStatus)) setPushStatus(conn, '');
         continue;
       }
+      foundSubscription = true;
       if (conn.vapidPublicKey && savedKey && savedKey !== conn.vapidPublicKey) setPushStatus(conn, 'key-mismatch');
       else if (!conn.pushStatus || conn.pushStatus === 'missing-config' || conn.pushStatus === 'failed') setPushStatus(conn, 'browser-subscribed');
+    } catch (_err) {
+      continue;
     }
-    return Boolean(subscription);
-  } catch (_err) {
-    return false;
   }
+  return foundSubscription;
 }
 
 async function registerPushSubscription(relayId) {
@@ -513,15 +548,17 @@ async function registerPushSubscription(relayId) {
   }
   if (!pushSupported() || !notificationsEnabled()) return false;
 
-  const registration = await readyServiceWorker();
+  const registration = await readyServiceWorker(relayId);
   if (!registration) return false;
 
   try {
     let subscription = await registration.pushManager.getSubscription();
-    const savedKey = localStorage.getItem(PUSH_VAPID_KEY) || '';
+    const savedKey = localStorage.getItem(relayVapidStorageKey(relayId)) || '';
+    const replaceEndpoints = [];
     if (subscription && savedKey && savedKey !== conn.vapidPublicKey) {
-      setPushStatus(conn, 'key-mismatch');
-      return false;
+      replaceEndpoints.push(subscription.endpoint);
+      await subscription.unsubscribe();
+      subscription = null;
     }
     if (!subscription) {
       subscription = await registration.pushManager.subscribe({
@@ -529,10 +566,14 @@ async function registerPushSubscription(relayId) {
         applicationServerKey: urlBase64ToUint8Array(conn.vapidPublicKey),
       });
     }
-    localStorage.setItem(PUSH_VAPID_KEY, conn.vapidPublicKey);
+    const legacyEndpoint = await legacyPushEndpoint();
+    if (legacyEndpoint) replaceEndpoints.push(legacyEndpoint);
+    localStorage.setItem(relayVapidStorageKey(relayId), conn.vapidPublicKey);
     conn.ws.send(JSON.stringify({
       type: 'push_subscribe',
       subscription: subscription.toJSON(),
+      client_id: `${pushClientId()}:${relayId}`,
+      replace_endpoints: [...new Set(replaceEndpoints)],
       user_agent: navigator.userAgent,
     }));
     setPushStatus(conn, 'sent');
@@ -540,6 +581,18 @@ async function registerPushSubscription(relayId) {
   } catch (_err) {
     setPushStatus(conn, 'failed');
     return false;
+  }
+}
+
+async function legacyPushEndpoint() {
+  if (!pushSupported()) return '';
+  const registration = await readyServiceWorker();
+  if (!registration || !registration.pushManager) return '';
+  try {
+    const subscription = await registration.pushManager.getSubscription();
+    return subscription ? subscription.endpoint : '';
+  } catch (_err) {
+    return '';
   }
 }
 
