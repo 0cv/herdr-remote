@@ -108,6 +108,8 @@ In the app Settings, add one relay entry per computer:
 - **Relay URL:** `wss://...`
 - **Token:** value of `HERDR_RELAY_TOKEN`
 
+Then tap **Enable Notifications** in Settings. The relay generates Web Push VAPID keys in `relay/push/` and stores this device's push subscription there, so installed PWAs can be notified even when the app is closed or suspended.
+
 ## Stable Hostnames
 
 For day-to-day use, create one named Cloudflare Tunnel and one DNS hostname per computer:
@@ -226,6 +228,7 @@ The plugin sends local agent-status events to the local relay over UDP on `127.0
 - Set `HERDR_RELAY_HOST` only if you intentionally need a non-loopback bind address. The relay refuses a non-loopback bind without `HERDR_RELAY_TOKEN`.
 - Tokenless browser connections are rejected unless their `Origin` is listed in `HERDR_ALLOWED_ORIGINS` as a comma-separated list, such as `https://your-pages-site.pages.dev`.
 - The web app stores relay URLs and tokens in browser local storage on the device where you configure it.
+- Web Push VAPID private keys and push subscriptions are local runtime state in `relay/push/`; keep that directory private and do not commit it.
 - A connected web client can send text and key input to Herdr panes exposed by that relay. Treat relay URLs and tokens as sensitive.
 - The relay executes only local `herdr pane ...` commands; it does not shell into other machines.
 

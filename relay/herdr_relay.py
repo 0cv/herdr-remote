@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["websockets>=14.0"]
+# dependencies = ["websockets>=14.0", "pywebpush>=2.0.0"]
 # ///
 """Herdr Mobile Relay server — polls local herdr and broadcasts to clients."""
-import asyncio, hmac, json, os, re, shutil, signal, socket, subprocess, urllib.parse
+import asyncio, base64, hmac, json, os, re, shutil, signal, socket, subprocess, urllib.parse
+from pathlib import Path
 
 try:
     from websockets.asyncio.server import serve
 except ImportError:
     from websockets.server import serve
+from websockets.exceptions import ConnectionClosed
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from py_vapid import Vapid
+from pywebpush import WebPushException, webpush
 
 def default_herdr_bin():
     for candidate in (
@@ -30,23 +35,43 @@ WS_HOST = os.environ.get("HERDR_RELAY_HOST", "127.0.0.1")
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = float(os.environ.get("HERDR_RELAY_POLL_INTERVAL", "2"))
 PLUGIN_PORT = int(os.environ.get("HERDR_RELAY_PLUGIN_PORT", "8376"))
-AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Optional: shared secret for relay auth
+AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for public/browser relay auth
 ALLOWED_ORIGINS = {
     origin.strip().rstrip("/")
     for origin in os.environ.get("HERDR_ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 }
 LOCAL_HOST = socket.gethostname().split(".")[0] or "local"
+PUSH_DIR = Path(os.environ.get("HERDR_RELAY_PUSH_DIR", Path(__file__).with_name("push")))
+PUSH_SUBSCRIPTIONS_FILE = PUSH_DIR / "subscriptions.json"
+VAPID_PRIVATE_KEY_FILE = Path(os.environ.get("HERDR_VAPID_PRIVATE_KEY", PUSH_DIR / "vapid_private.pem"))
+VAPID_SUBJECT = os.environ.get("HERDR_VAPID_SUBJECT", f"mailto:herdr-mobile-relay@{LOCAL_HOST}.local")
+VAPID_PUBLIC_KEY = None
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 CHROME_RE = re.compile(
     r"^[\s─━═_—│|◔◑◕●\s]+$"
     r"|Kiro\s[·•]"
     r"|esc to cancel"
     r"|type to queue"
-    r"|^\s*[◔◑◕●]\s+(Shell|Bash)"
+    r"|^\s*[◔◑◕●]\s+(Shell|Bash)",
+    re.IGNORECASE,
 )
+PROMPT_SKIP_RE = re.compile(
+    r"^(?:"
+    r"bash command"
+    r"|do you want to proceed\??"
+    r"|would you like to run\b.*"
+    r"|environment:\s*\w+"
+    r"|press enter to confirm\b.*"
+    r"|esc to cancel\b.*"
+    r")$",
+    re.IGNORECASE,
+)
+MENU_OPTION_RE = re.compile(r"^\s*[❯›]?\s*(\d+)\.\s+(.+?)\s*$")
+COMMAND_RE = re.compile(r"^\s*(?:[$>]|\u276f|\u203a)\s+(.+?)\s*$")
 
 clients = set()
 last_statuses = {}
@@ -116,20 +141,217 @@ def get_agents():
 
 
 def read_pane(pane_id):
-    raw = run_herdr("pane", "read", pane_id, "--lines", "20", "--source", "recent")
+    raw = run_herdr("pane", "read", pane_id, "--lines", "20", "--source", "recent-unwrapped")
     if raw is None:
         return ""
-    lines = [l for l in raw.splitlines() if l.strip() and not CHROME_RE.search(l)]
-    return "\n".join(lines[-6:])
+    lines = []
+    for line in raw.splitlines():
+        clean = clean_pane_line(line)
+        if clean and not CHROME_RE.search(clean) and not PROMPT_SKIP_RE.search(clean):
+            lines.append(line)
+    return "\n".join(lines[-12:])
+
+
+def clean_pane_line(line):
+    clean = ANSI_RE.sub("", line).strip()
+    clean = re.sub(r"^[│|]\s*", "", clean)
+    clean = re.sub(r"\s*[│|]$", "", clean)
+    return clean.strip()
 
 
 def detect_options(text):
+    runs = []
+    current = []
+    expected = 1
+
+    for line in text.splitlines():
+        match = MENU_OPTION_RE.match(clean_pane_line(line))
+        if not match:
+            if current:
+                runs.append(current)
+                current = []
+                expected = 1
+            continue
+
+        number = int(match.group(1))
+        label = match.group(2).strip()
+        if number == 1:
+            if current:
+                runs.append(current)
+            current = [label]
+            expected = 2
+        elif current and number == expected:
+            current.append(label)
+            expected += 1
+        else:
+            if current:
+                runs.append(current)
+            current = []
+            expected = 1
+
+    if current:
+        runs.append(current)
+
+    menus = [run for run in runs if len(run) >= 2]
+    if menus:
+        return menus[-1]
+
     lower = text.lower()
     if "yes, single permission" in lower:
         return TOOL_OPTIONS
     if "approve all pending" in lower:
         return SUBAGENT_OPTIONS
     return None
+
+
+def detect_command_context(text):
+    command = ""
+    fallback = ""
+    for line in text.splitlines():
+        clean = clean_pane_line(line)
+        if (
+            not clean
+            or MENU_OPTION_RE.match(clean)
+            or CHROME_RE.search(clean)
+            or PROMPT_SKIP_RE.search(clean)
+        ):
+            continue
+        match = COMMAND_RE.match(clean)
+        if match:
+            command = match.group(1).strip()
+            continue
+        fallback = clean
+    return (command or fallback)[:240]
+
+
+def ensure_private_dir(path):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def ensure_vapid_public_key():
+    global VAPID_PUBLIC_KEY
+    if VAPID_PUBLIC_KEY:
+        return VAPID_PUBLIC_KEY
+    ensure_private_dir(PUSH_DIR)
+    ensure_private_dir(VAPID_PRIVATE_KEY_FILE.parent)
+    vapid = Vapid.from_file(str(VAPID_PRIVATE_KEY_FILE))
+    try:
+        os.chmod(VAPID_PRIVATE_KEY_FILE, 0o600)
+    except OSError:
+        pass
+    public_bytes = vapid.public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    VAPID_PUBLIC_KEY = base64.urlsafe_b64encode(public_bytes).rstrip(b"=").decode()
+    return VAPID_PUBLIC_KEY
+
+
+def load_push_subscriptions():
+    try:
+        data = json.loads(PUSH_SUBSCRIPTIONS_FILE.read_text())
+        if isinstance(data, dict) and isinstance(data.get("subscriptions"), list):
+            return data["subscriptions"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def save_push_subscriptions(subscriptions):
+    ensure_private_dir(PUSH_DIR)
+    payload = {"subscriptions": subscriptions}
+    tmp = PUSH_SUBSCRIPTIONS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(PUSH_SUBSCRIPTIONS_FILE)
+
+
+def push_subscription_endpoint(subscription):
+    if not isinstance(subscription, dict):
+        return ""
+    endpoint = subscription.get("endpoint", "")
+    return endpoint if isinstance(endpoint, str) else ""
+
+
+def valid_push_subscription(subscription):
+    endpoint = push_subscription_endpoint(subscription)
+    keys = subscription.get("keys", {}) if isinstance(subscription, dict) else {}
+    return bool(endpoint and isinstance(keys, dict) and keys.get("p256dh") and keys.get("auth"))
+
+
+def store_push_subscription(subscription, user_agent=""):
+    if not valid_push_subscription(subscription):
+        return False
+    endpoint = push_subscription_endpoint(subscription)
+    subscriptions = [s for s in load_push_subscriptions() if push_subscription_endpoint(s.get("subscription", {})) != endpoint]
+    subscriptions.append({
+        "subscription": subscription,
+        "user_agent": user_agent[:240] if isinstance(user_agent, str) else "",
+    })
+    save_push_subscriptions(subscriptions)
+    return True
+
+
+def remove_push_subscriptions(endpoints):
+    if not endpoints:
+        return
+    stale = set(endpoints)
+    subscriptions = [
+        s for s in load_push_subscriptions()
+        if push_subscription_endpoint(s.get("subscription", {})) not in stale
+    ]
+    save_push_subscriptions(subscriptions)
+
+
+def push_payload(blocked_msg):
+    project = blocked_msg.get("project") or blocked_msg.get("agent") or "agent"
+    host = blocked_msg.get("host") or LOCAL_HOST
+    command = blocked_msg.get("command") or "Agent needs approval"
+    return {
+        "title": f"{project} blocked",
+        "body": f"{command} · {host}",
+        "tag": f"herdr-{host}-{blocked_msg.get('pane_id', '')}",
+        "url": "./",
+    }
+
+
+def send_webpush_notifications(blocked_msg):
+    subscriptions = load_push_subscriptions()
+    if not subscriptions:
+        return
+    payload = json.dumps(push_payload(blocked_msg))
+    stale = []
+    for item in subscriptions:
+        subscription = item.get("subscription", {})
+        try:
+            webpush(
+                subscription_info=subscription,
+                data=payload,
+                vapid_private_key=str(VAPID_PRIVATE_KEY_FILE),
+                vapid_claims={"sub": VAPID_SUBJECT},
+                ttl=300,
+                timeout=10,
+            )
+        except WebPushException as exc:
+            response = getattr(exc, "response", None)
+            if response is not None and response.status_code in {404, 410}:
+                stale.append(push_subscription_endpoint(subscription))
+        except Exception:
+            pass
+    remove_push_subscriptions(stale)
+
+
+async def push_blocked(blocked_msg):
+    await asyncio.to_thread(send_webpush_notifications, blocked_msg)
+
+
+async def publish_blocked(blocked_msg):
+    await broadcast(blocked_msg)
+    asyncio.create_task(push_blocked(blocked_msg))
 
 
 def respond_keys(index, total=None):
@@ -174,7 +396,8 @@ async def poll_loop():
                 if status == "blocked" and last_statuses.get(pid) != "blocked":
                     content = await asyncio.to_thread(read_pane, pid)
                     options = detect_options(content)
-                    await broadcast({
+                    command = detect_command_context(content)
+                    await publish_blocked({
                         "type": "blocked", "pane_id": pid,
                         "agent": a["agent"], "project": a["project"],
                         "host": a.get("host", LOCAL_HOST),
@@ -183,6 +406,7 @@ async def poll_loop():
                         "tab_number": a.get("tab_number"),
                         "workspace_id": a.get("workspace_id", ""),
                         "prompt": content[:500],
+                        "command": command,
                         "options": options or TOOL_OPTIONS
                     })
                 last_statuses[pid] = status
@@ -195,13 +419,15 @@ async def event_push():
         raw_pane_id = event.get("pane_id", "")
         status = event.get("status", "")
         host = event.get("host", LOCAL_HOST)
+        was_blocked = raw_pane_id and last_statuses.get(raw_pane_id) == "blocked"
         if raw_pane_id and status:
             last_statuses[raw_pane_id] = status
 
-        if status == "blocked" and raw_pane_id:
+        if status == "blocked" and raw_pane_id and not was_blocked:
             content = await asyncio.to_thread(read_pane, raw_pane_id) or event.get("prompt", "Agent is blocked")
             options = detect_options(content)
-            await broadcast({
+            command = detect_command_context(content)
+            await publish_blocked({
                 "type": "blocked", "pane_id": raw_pane_id,
                 "agent": event.get("agent", ""),
                 "project": event.get("project", ""),
@@ -211,6 +437,7 @@ async def event_push():
                 "tab_number": event.get("tab_number"),
                 "workspace_id": event.get("workspace_id", ""),
                 "prompt": content[:500],
+                "command": command,
                 "options": options or TOOL_OPTIONS
             })
 
@@ -318,6 +545,13 @@ async def process_request(connection, request):
 async def handle_client(ws):
     clients.add(ws)
     try:
+        try:
+            await ws.send(json.dumps({
+                "type": "push_config",
+                "vapid_public_key": ensure_vapid_public_key(),
+            }))
+        except Exception:
+            pass
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -334,6 +568,9 @@ async def handle_client(ws):
                     await run_herdr_async("pane", "send-keys", pane_id, *keys)
             elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
+            elif msg_type == "push_subscribe":
+                ok = store_push_subscription(msg.get("subscription"), msg.get("user_agent", ""))
+                await ws.send(json.dumps({"type": "push_subscribed", "ok": ok}))
             elif msg_type == "read_pane":
                 pane_id = msg.get("pane_id")
                 if not pane_id:
@@ -361,6 +598,8 @@ async def handle_client(ws):
                 text = msg.get("text", "")
                 if isinstance(text, str):
                     await run_herdr_async("pane", "send-text", pane_id, text)
+    except ConnectionClosed:
+        pass
     finally:
         clients.discard(ws)
 

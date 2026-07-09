@@ -8,4 +8,5 @@ __pycache__/
 .venv/
 .env
 relay/.env
+relay/push/
 .wrangler/

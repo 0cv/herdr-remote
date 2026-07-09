@@ -70,6 +70,8 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
 .relay-row .info { flex: 1; min-width: 0; }
 .relay-row .name { font-size: 0.78rem; font-weight: 600; }
 .relay-row .url { font-size: 0.64rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relay-row .push-state { font-size: 0.62rem; color: var(--muted); display: flex; align-items: center; gap: 5px; margin-top: 2px; }
+.relay-row .push-state .mini-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .relay-row button { margin-top: 0; padding: 6px 10px; font-size: 12px; }
 .theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .setting-group .theme-btn { margin-top: 0; padding: 8px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.7rem; font-weight: 600; cursor: pointer; text-align: center; }
@@ -86,10 +88,16 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
 .agents { padding: 12px; }
 .section-header { font-size: 0.65rem; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; display: flex; align-items: center; gap: 5px; }
 .agent { background: var(--surface); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.agent.blocked-agent { align-items: flex-start; }
 .agent:active { opacity: 0.7; }
+.agent .dot { flex-shrink: 0; }
+.agent.blocked-agent > .dot { margin-top: 0.25rem; }
 .agent .info { flex: 1; }
 .agent .project { font-size: 0.85rem; font-weight: 500; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .agent .meta { font-size: 0.65rem; color: var(--muted); }
+.agent .prompt-preview { margin-top: 6px; color: var(--text); font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.68rem; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.agent-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.agent-actions button { border: none; border-radius: 7px; padding: 7px 10px; font-size: 0.68rem; font-weight: 700; cursor: pointer; min-width: 52px; max-width: 100%; overflow-wrap: anywhere; }
 .host-badge { color: var(--orange); font-size: 0.6rem; font-weight: 600; }
 
 /* Terminal view */
@@ -103,7 +111,7 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
 .quick-actions { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
 .quick-actions:empty { display: none; }
 .quick-actions button { padding: 10px 14px; border-radius: 8px; border: none; font-size: 0.75rem; font-weight: 600; cursor: pointer; flex: 1; min-width: 70px; }
-.btn-yes { background: var(--green); color: #000; } .btn-trust { background: var(--blue); color: #fff; } .btn-no { background: var(--red); color: #fff; }
+.btn-yes { background: var(--green); color: #000; } .btn-trust { background: var(--blue); color: #fff; } .btn-no { background: var(--red); color: #fff; } .btn-next { background: var(--surface); color: var(--blue); border: 1px solid var(--border) !important; }
 .term-input { position: relative; z-index: 1; border-top: 1px solid var(--border); padding: 8px 12px; display: flex; gap: 6px; background: var(--surface); flex-shrink: 0; align-items: flex-end; }
 .term-input textarea { flex: 1; min-height: 40px; max-height: 120px; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.35; font-family: monospace; min-width: 0; resize: none; overflow-y: auto; }
 .term-input button { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-weight: 700; font-size: 12px; flex-shrink: 0; }
@@ -197,6 +205,11 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
     </label>
   </div>
   <div class="setting-group">
+    <label>Notifications</label>
+    <button id="notificationButton" onclick="enableNotifications()">Enable Notifications</button>
+    <div class="hint" id="notificationHint"></div>
+  </div>
+  <div class="setting-group">
     <label>Security</label>
     <label class="toggle-row">
       <span>Require Fingerprint / Device Unlock</span>
@@ -246,9 +259,14 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
 const THEMES = ['dark','light','nord','solarized','rose'];
 const TERMINAL_FONT_SIZES = ['compact','regular','large'];
 const TERMINAL_HISTORY_LINES = 500;
+const APP_TITLE = '🐑 herdr';
+const MENU_LINE_RE = /^\s*[❯›]?\s*\d+\.\s+.+$/;
+const COMMAND_LINE_RE = /^\s*(?:[$>❯›])\s+(.+?)\s*$/;
+const PROMPT_SKIP_RE = /^(?:bash command|do you want to proceed\??|would you like to run\b.*|environment:\s*\w+|press enter to confirm\b.*|esc to cancel\b.*)$/i;
 const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
 const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
+const PUSH_VAPID_KEY = 'herdr_push_vapid_key';
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
   34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
@@ -257,13 +275,19 @@ const ANSI_COLORS = {
 };
 let relayConfigs = loadRelayConfigs(), connections = new Map(), agents = [], activePane = null, activePaneSnapshot = null, refreshInterval = null, lastAgentsSignature = '', currentView = 'agents', viewIndex = 0, lastInsertedBackspaces = 0;
 let securityLocked = false, unlockInProgress = false, pendingConnectAll = false;
+let lastBlockedPaneIds = new Set();
+let respondingPaneIds = new Set();
+let serviceWorkerRegistration = null;
+let notificationSyncing = false;
 
 // Settings
 const savedTheme = localStorage.getItem('herdr_theme') || 'nord';
 const savedTerminalFontSize = localStorage.getItem('herdr_terminal_font_size') || localStorage.getItem('herdr_home_font_size') || 'compact';
 applyTheme(savedTheme);
 applyTerminalFontSize(savedTerminalFontSize);
+registerServiceWorker();
 renderCodexStatusLineSetting();
+renderNotificationSetting();
 renderDeviceVerificationSetting();
 renderRelayList();
 
@@ -314,6 +338,209 @@ function setCodexStatusLineVisible(visible) {
 function renderCodexStatusLineSetting() {
   const toggle = document.getElementById('codexStatusLineToggle');
   if (toggle) toggle.checked = codexStatusLineVisible();
+}
+
+function notificationsSupported() {
+  return 'Notification' in window;
+}
+
+function pushSupported() {
+  return notificationsSupported() && 'serviceWorker' in navigator && 'PushManager' in window;
+}
+
+function notificationsEnabled() {
+  return notificationsSupported() && Notification.permission === 'granted';
+}
+
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) {
+    renderNotificationSetting();
+    return null;
+  }
+  try {
+    serviceWorkerRegistration = await navigator.serviceWorker.register('sw.js');
+    renderNotificationSetting();
+    refreshPushSubscriptionState();
+    return serviceWorkerRegistration;
+  } catch (_err) {
+    renderNotificationSetting();
+    return null;
+  }
+}
+
+async function readyServiceWorker() {
+  if (serviceWorkerRegistration) return serviceWorkerRegistration;
+  await registerServiceWorker();
+  if (!('serviceWorker' in navigator)) return null;
+  try {
+    serviceWorkerRegistration = await navigator.serviceWorker.ready;
+    return serviceWorkerRegistration;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function renderNotificationSetting() {
+  const button = document.getElementById('notificationButton');
+  const hint = document.getElementById('notificationHint');
+  if (!button || !hint) return;
+
+  if (!notificationsSupported()) {
+    button.disabled = true;
+    button.textContent = 'Notifications Unavailable';
+    hint.textContent = 'This browser does not support page notifications.';
+    return;
+  }
+
+  if (Notification.permission === 'granted') {
+    if (!pushSupported()) {
+      button.disabled = true;
+      button.textContent = 'Notifications Enabled';
+      hint.textContent = 'Background tabs can notify when this browser keeps the page alive.';
+      return;
+    }
+
+    const relays = [...connections.values()];
+    const connectedRelays = relays.filter(conn => conn.status === 'connected');
+    const synced = relays.filter(conn => conn.pushStatus === 'subscribed').length;
+    const browserSubscribed = relays.filter(conn => conn.pushStatus === 'browser-subscribed').length;
+    const waiting = relays.some(conn => conn.pushStatus === 'sent');
+    const failed = relays.some(conn => conn.pushStatus === 'failed');
+    const missingConfig = relays.some(conn => conn.pushStatus === 'missing-config');
+    const keyMismatch = relays.some(conn => conn.pushStatus === 'key-mismatch');
+    button.disabled = notificationSyncing || connectedRelays.length === 0;
+    button.textContent = notificationSyncing ? 'Syncing Push...' : 'Sync Push Subscription';
+    if (notificationSyncing) hint.textContent = 'Sending this browser push subscription to connected relays.';
+    else if (connectedRelays.length === 0) hint.textContent = 'Connect a relay before syncing push notifications.';
+    else if (missingConfig) hint.textContent = 'Waiting for the relay push key. Reconnect the relay if this stays here.';
+    else if (keyMismatch) hint.textContent = 'This app has a subscription for another relay key. Share one VAPID key across relays or clear this site data.';
+    else if (failed) hint.textContent = 'Push subscription sync failed. Reconnect the relay and try again.';
+    else if (waiting) hint.textContent = 'Push subscription sent; waiting for relay confirmation.';
+    else if (synced) hint.textContent = `Push subscription synced with ${synced} relay${synced === 1 ? '' : 's'}.`;
+    else if (browserSubscribed) hint.textContent = 'This browser has an active push subscription. Sync it with the relay.';
+    else hint.textContent = 'Push notifications can wake this app when an agent blocks.';
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    button.disabled = true;
+    button.textContent = 'Notifications Blocked';
+    hint.textContent = 'Enable notifications in this browser site settings.';
+    return;
+  }
+
+  button.disabled = false;
+  button.textContent = 'Enable Notifications';
+  hint.textContent = pushSupported()
+    ? 'Required before closed-app push notifications can work.'
+    : 'Required before background tabs can notify.';
+}
+
+async function enableNotifications() {
+  if (!notificationsSupported()) {
+    renderNotificationSetting();
+    return;
+  }
+  if (notificationSyncing) return;
+  notificationSyncing = true;
+  renderNotificationSetting();
+  try {
+    await Notification.requestPermission();
+    if (notificationsEnabled()) {
+      await readyServiceWorker();
+      await registerAllPushSubscriptions();
+    }
+  } catch (_err) {}
+  finally {
+    notificationSyncing = false;
+    renderNotificationSetting();
+  }
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
+  return output;
+}
+
+async function registerAllPushSubscriptions() {
+  const results = await Promise.all([...connections.keys()].map(id => registerPushSubscription(id)));
+  return results.some(Boolean);
+}
+
+function setPushStatus(conn, status) {
+  if (!conn || conn.pushStatus === status) return;
+  conn.pushStatus = status;
+  renderNotificationSetting();
+  renderRelayList();
+}
+
+async function refreshPushSubscriptionState(relayId = null) {
+  if (!pushSupported() || !notificationsEnabled()) return false;
+  const registration = await readyServiceWorker();
+  if (!registration || !registration.pushManager) return false;
+  try {
+    const subscription = await registration.pushManager.getSubscription();
+    const savedKey = localStorage.getItem(PUSH_VAPID_KEY) || '';
+    const targets = relayId ? [connections.get(relayId)].filter(Boolean) : [...connections.values()];
+    for (const conn of targets) {
+      if (!subscription) {
+        if (['browser-subscribed', 'subscribed', 'sent'].includes(conn.pushStatus)) setPushStatus(conn, '');
+        continue;
+      }
+      if (conn.vapidPublicKey && savedKey && savedKey !== conn.vapidPublicKey) setPushStatus(conn, 'key-mismatch');
+      else if (!conn.pushStatus || conn.pushStatus === 'missing-config' || conn.pushStatus === 'failed') setPushStatus(conn, 'browser-subscribed');
+    }
+    return Boolean(subscription);
+  } catch (_err) {
+    return false;
+  }
+}
+
+async function registerPushSubscription(relayId) {
+  const conn = connections.get(relayId);
+  if (!conn) return false;
+  if (!conn.vapidPublicKey) {
+    setPushStatus(conn, 'missing-config');
+    return false;
+  }
+  if (!conn.ws || conn.ws.readyState !== 1) {
+    setPushStatus(conn, 'failed');
+    return false;
+  }
+  if (!pushSupported() || !notificationsEnabled()) return false;
+
+  const registration = await readyServiceWorker();
+  if (!registration) return false;
+
+  try {
+    let subscription = await registration.pushManager.getSubscription();
+    const savedKey = localStorage.getItem(PUSH_VAPID_KEY) || '';
+    if (subscription && savedKey && savedKey !== conn.vapidPublicKey) {
+      setPushStatus(conn, 'key-mismatch');
+      return false;
+    }
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(conn.vapidPublicKey),
+      });
+    }
+    localStorage.setItem(PUSH_VAPID_KEY, conn.vapidPublicKey);
+    conn.ws.send(JSON.stringify({
+      type: 'push_subscribe',
+      subscription: subscription.toJSON(),
+      user_agent: navigator.userAgent,
+    }));
+    setPushStatus(conn, 'sent');
+    return true;
+  } catch (_err) {
+    setPushStatus(conn, 'failed');
+    return false;
+  }
 }
 
 function deviceVerificationSupported() {
@@ -632,17 +859,32 @@ function renderRelayList() {
     const conn = connections.get(relay.id);
     const status = conn ? conn.status : 'disconnected';
     const color = status === 'connected' ? 'var(--green)' : status === 'connecting' ? 'var(--orange)' : 'var(--red)';
+    const push = pushStatusMeta(conn);
     const idArg = escapeHtml(JSON.stringify(relay.id));
     return `<div class="relay-row">
       <span class="dot" style="background:${color}"></span>
       <div class="info">
         <div class="name">${escapeHtml(relay.label)}</div>
         <div class="url">${escapeHtml(relay.url)}</div>
+        <div class="push-state" title="${escapeHtml(push.title)}"><span class="mini-dot" style="background:${push.color}"></span>${escapeHtml(push.label)}</div>
       </div>
       <button class="danger" onclick='removeRelay(${idArg})'>Remove</button>
     </div>`;
   }).join('');
   updateSettingsStatus();
+}
+
+function pushStatusMeta(conn) {
+  if (!pushSupported()) return {label: 'Push unsupported', color: 'var(--muted)', title: 'This browser cannot use Web Push.'};
+  if (!notificationsEnabled()) return {label: 'Push off', color: 'var(--muted)', title: 'Notifications are not enabled for this site.'};
+  if (!conn || conn.status !== 'connected') return {label: 'Push offline', color: 'var(--muted)', title: 'Connect the relay to sync push notifications.'};
+  if (conn.pushStatus === 'subscribed') return {label: 'Push synced', color: 'var(--green)', title: 'This relay confirmed the current browser push subscription.'};
+  if (conn.pushStatus === 'browser-subscribed') return {label: 'Push enabled', color: 'var(--yellow)', title: 'This browser has a push subscription; sync it with the relay.'};
+  if (conn.pushStatus === 'sent') return {label: 'Push syncing', color: 'var(--blue)', title: 'Subscription sent; waiting for relay confirmation.'};
+  if (conn.pushStatus === 'missing-config') return {label: 'Push waiting', color: 'var(--yellow)', title: 'Waiting for the relay VAPID public key.'};
+  if (conn.pushStatus === 'key-mismatch') return {label: 'Push key mismatch', color: 'var(--orange)', title: 'This browser subscription belongs to another relay VAPID key.'};
+  if (conn.pushStatus === 'failed') return {label: 'Push failed', color: 'var(--red)', title: 'The last push subscription sync failed.'};
+  return {label: 'Push not synced', color: 'var(--muted)', title: 'Tap Sync Push Subscription to register this device with the relay.'};
 }
 
 function toggleSettings() {
@@ -711,6 +953,7 @@ function showSettingsView() {
   document.getElementById('terminalView').classList.remove('active');
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('settingsView').style.display = 'block';
+  renderNotificationSetting();
   renderRelayList();
   updateSettingsStatus();
 }
@@ -762,6 +1005,7 @@ function connectRelay(relay) {
     conn.status = 'connected';
     updateStatusDot();
     renderRelayList();
+    refreshPushSubscriptionState(relay.id);
     const target = activePaneTarget();
     if (target && target.relay_id === relay.id) refreshPane();
   };
@@ -821,12 +1065,29 @@ function showSetup() {
 }
 
 function handleMessage(relayId, msg) {
-  if (msg.type === 'agents') {
+  if (msg.type === 'push_config') {
+    const conn = connections.get(relayId);
+    if (conn) {
+      conn.vapidPublicKey = msg.vapid_public_key || '';
+      if (notificationsEnabled()) registerPushSubscription(relayId);
+      else refreshPushSubscriptionState(relayId);
+      renderNotificationSetting();
+      renderRelayList();
+    }
+  }
+  else if (msg.type === 'push_subscribed') {
+    const conn = connections.get(relayId);
+    if (conn) {
+      setPushStatus(conn, msg.ok ? 'subscribed' : 'failed');
+    }
+  }
+  else if (msg.type === 'agents') {
     const nextAgents = mergeAgentList(relayId, (msg.agents || []).map(a => normalizeAgent(relayId, a)));
     const nextSignature = agentsSignature(nextAgents);
     const wasActivePaneMissing = currentView === 'terminal' && activePane && !activeAgent();
     agents = nextAgents;
-    if (nextSignature !== lastAgentsSignature) {
+    const respondingChanged = reconcileRespondingPanes();
+    if (nextSignature !== lastAgentsSignature || respondingChanged) {
       lastAgentsSignature = nextSignature;
       render();
     }
@@ -835,8 +1096,9 @@ function handleMessage(relayId, msg) {
   else if (msg.type === 'blocked') {
     const next = normalizeAgent(relayId, {...msg, status: 'blocked'});
     const a = agents.find(x => x.pane_id === next.pane_id);
-    if (a) Object.assign(a, mergeAgentDetails(a, {...next, prompt: msg.prompt, options: msg.options}));
+    if (a) Object.assign(a, mergeAgentDetails(a, {...next, prompt: msg.prompt, command: msg.command, options: msg.options}));
     else agents.push(next);
+    respondingPaneIds.delete(next.pane_id);
     lastAgentsSignature = agentsSignature(agents);
     render();
     syncActiveTerminal();
@@ -845,6 +1107,7 @@ function handleMessage(relayId, msg) {
     const a = agents.find(x => x.pane_id === next.pane_id);
     if (a) Object.assign(a, mergeAgentDetails(a, next));
     else agents.push(next);
+    reconcileRespondingPanes();
     lastAgentsSignature = agentsSignature(agents);
     render();
     syncActiveTerminal();
@@ -890,6 +1153,7 @@ function mergeAgentDetails(previous, next) {
     tab_number: next.tab_number ?? previous.tab_number,
     workspace_id: next.workspace_id || previous.workspace_id || '',
     prompt: keepBlockedDetails ? (next.prompt ?? previous.prompt) : next.prompt,
+    command: keepBlockedDetails ? (next.command ?? previous.command) : next.command,
     options: keepBlockedDetails ? (next.options ?? previous.options) : next.options,
   };
 }
@@ -905,7 +1169,7 @@ function removeAgentsForRelay(relayId) {
 function agentsSignature(list) {
   return JSON.stringify(list.map(a => [
     a.relay_id, a.pane_id, a.raw_pane_id, a.tab_id, a.tab_label, a.tab_number,
-    a.agent, a.status, a.project, a.cwd, a.host, a.prompt, a.options
+    a.agent, a.status, a.project, a.cwd, a.host, a.prompt, a.command, a.options
   ]));
 }
 
@@ -1043,6 +1307,139 @@ function agentStatusGroup(agent) {
   return 'other';
 }
 
+function updateBlockedIndicators(blocked) {
+  const count = blocked.length;
+  document.title = count ? `(${count}) ${APP_TITLE}` : APP_TITLE;
+  updateAppBadge(count);
+
+  const paneIds = new Set(blocked.map(a => a.pane_id));
+  const addedAgents = blocked.filter(a => !lastBlockedPaneIds.has(a.pane_id));
+  if (addedAgents.length) {
+    if (navigator.vibrate) navigator.vibrate([120, 80, 120]);
+    for (const agent of addedAgents) notifyBlockedAgent(agent);
+  }
+  lastBlockedPaneIds = paneIds;
+}
+
+function updateAppBadge(count) {
+  if (count > 0 && navigator.setAppBadge) {
+    navigator.setAppBadge(count).catch(() => {});
+    return;
+  }
+  if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
+}
+
+function notifyBlockedAgent(agent) {
+  if (!notificationsEnabled()) return;
+  if (document.visibilityState === 'visible' && document.hasFocus()) return;
+  const title = `${displayName(agent)} blocked`;
+  const body = approvalPromptPreview(agent) || `${agent.agent || 'Agent'} needs approval`;
+  showHerdrNotification(title, {
+    body,
+    tag: `herdr-${agent.pane_id}`,
+    renotify: true,
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    data: {
+      url: viewUrl({view: 'terminal', paneId: agent.pane_id}),
+      paneId: agent.pane_id,
+    },
+  });
+}
+
+async function showHerdrNotification(title, options) {
+  try {
+    const registration = await readyServiceWorker();
+    if (registration && registration.showNotification) {
+      await registration.showNotification(title, options);
+      return;
+    }
+  } catch (_err) {}
+
+  try {
+    const notification = new Notification(title, options);
+    notification.onclick = () => {
+      window.focus();
+      if (options.data && options.data.paneId) openTerminal(options.data.paneId);
+      notification.close();
+    };
+  } catch (_err) {}
+}
+
+function reconcileRespondingPanes() {
+  const blockedPaneIds = new Set(agents.filter(a => agentStatusGroup(a) === 'blocked').map(a => a.pane_id));
+  let changed = false;
+  for (const paneId of [...respondingPaneIds]) {
+    if (!blockedPaneIds.has(paneId)) {
+      respondingPaneIds.delete(paneId);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function markPaneResponding(paneId) {
+  if (!paneId) return;
+  respondingPaneIds.add(paneId);
+  render();
+  syncActiveTerminal();
+  setTimeout(() => {
+    if (!respondingPaneIds.delete(paneId)) return;
+    render();
+    syncActiveTerminal();
+  }, 5000);
+}
+
+function approvalOptions(agent) {
+  const opts = Array.isArray(agent && agent.options) ? agent.options.filter(Boolean) : [];
+  if (opts.length) return opts;
+  if (agentStatusGroup(agent) === 'blocked') return ['yes, single permission','trust, always allow','no (tab to edit)'];
+  return [];
+}
+
+function normalizeInlineText(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function cleanPromptLine(line) {
+  return normalizeInlineText(stripAnsi(line).replace(/^[│|]\s*/, '').replace(/\s*[│|]$/, ''));
+}
+
+function approvalButtonLabel(option, maxLength = 0) {
+  const label = normalizeInlineText(option) || 'Option';
+  if (maxLength && label.length > maxLength) return `${label.slice(0, maxLength - 3)}...`;
+  return label;
+}
+
+function approvalButtonClass(option, index, total) {
+  const value = approvalButtonLabel(option).toLowerCase();
+  if (index === total - 1 || /\b(no|deny|reject|cancel|exit)\b/.test(value)) return 'btn-no';
+  if (/\bapprove all\b/.test(value)) return 'btn-yes';
+  if (/\b(always|trust|don't ask|dont ask)\b/.test(value)) return 'btn-trust';
+  if (/\b(yes|approve|allow|proceed|confirm)\b/.test(value)) return 'btn-yes';
+  if (/\b(configure|edit|amend)\b/.test(value)) return 'btn-trust';
+  return 'btn-yes';
+}
+
+function approvalPromptPreview(agent) {
+  const command = normalizeInlineText(agent && agent.command);
+  if (command) return command;
+
+  let commandFallback = '';
+  let fallback = '';
+  for (const rawLine of String(agent && agent.prompt || '').split(/\r?\n/)) {
+    const line = cleanPromptLine(rawLine);
+    if (!line || MENU_LINE_RE.test(line) || PROMPT_SKIP_RE.test(line)) continue;
+    const match = COMMAND_LINE_RE.exec(line);
+    if (match) {
+      commandFallback = match[1].trim();
+      continue;
+    }
+    fallback = line;
+  }
+  return commandFallback || fallback;
+}
+
 function render() {
   const listView = document.getElementById('agentListView');
   const previousScrollTop = listView.scrollTop;
@@ -1050,6 +1447,7 @@ function render() {
   const working = agents.filter(a => agentStatusGroup(a)==='working');
   const ready = agents.filter(a => agentStatusGroup(a)==='ready');
   const other = agents.filter(a => agentStatusGroup(a)==='other');
+  updateBlockedIndicators(blocked);
   document.getElementById('agentCount').textContent = agentCountLabel();
   let html = '';
   if (blocked.length) html += section('Blocked', 'var(--red)', blocked);
@@ -1069,11 +1467,28 @@ function section(title, color, list) {
       const status = escapeHtml(a.status || 'unknown');
       const host = escapeHtml(hostLabel(a));
       const paneArg = escapeHtml(JSON.stringify(a.pane_id));
-      return `<div class="agent" onclick='openTerminal(${paneArg})'>
+      const blockedDetails = blockedCardDetails(a, paneArg);
+      const classes = agentStatusGroup(a) === 'blocked' ? 'agent blocked-agent' : 'agent';
+      return `<div class="${classes}" onclick='openTerminal(${paneArg})'>
         <span class="dot" style="background:${color}"></span>
-        <div class="info"><div class="project">${project}<span class="host-badge">@${host}</span></div><div class="meta">${agent} · ${status}</div></div>
+        <div class="info"><div class="project">${project}<span class="host-badge">@${host}</span></div><div class="meta">${agent} · ${status}</div>${blockedDetails}</div>
       </div>`;
     }).join('');
+}
+
+function blockedCardDetails(agent, paneArg) {
+  if (agentStatusGroup(agent) !== 'blocked') return '';
+  const preview = approvalPromptPreview(agent);
+  const previewHtml = preview ? `<div class="prompt-preview">${escapeHtml(preview)}</div>` : '';
+  if (respondingPaneIds.has(agent.pane_id)) return previewHtml;
+  const opts = approvalOptions(agent);
+  const total = opts.length;
+  const buttons = opts.map((option, index) => {
+    const cls = approvalButtonClass(option, index, total);
+    const label = escapeHtml(approvalButtonLabel(option, 48));
+    return `<button type="button" class="${cls}" onclick='event.stopPropagation(); respondForPane(${paneArg}, ${index}, ${total})'>${label}</button>`;
+  }).join('');
+  return `${previewHtml}${buttons ? `<div class="agent-actions">${buttons}</div>` : ''}`;
 }
 
 function openTerminal(paneId) {
@@ -1097,16 +1512,29 @@ function showTerminalView(paneId) {
 
 function renderTerminalActions(agent) {
   const qa = document.getElementById('quickActions');
-  if (agent&&agent.status==='blocked') {
-    const opts = agent.options||['yes, single permission','trust, always allow','no (tab to edit)'];
+  const next = nextBlockedAgent(agent);
+  const nextAction = next ? `<button type="button" class="btn-next" onclick='openNextBlocked(${escapeHtml(JSON.stringify(next.pane_id))})'>Next blocked →</button>` : '';
+  if (agent && agentStatusGroup(agent) === 'blocked' && !respondingPaneIds.has(agent.pane_id)) {
+    const opts = approvalOptions(agent);
     const total = opts.length;
-    qa.innerHTML = opts.map((o, i) => {
-      const cls = o.includes('yes')||o.includes('approve')?'btn-yes':o.includes('trust')?'btn-trust':'btn-no';
-      return `<button class="${cls}" onclick='respond(${i}, ${total})'>${escapeHtml(o.split(',')[0])}</button>`;
+    const actions = opts.map((option, index) => {
+      const cls = approvalButtonClass(option, index, total);
+      return `<button type="button" class="${cls}" onclick='respond(${index}, ${total})'>${escapeHtml(approvalButtonLabel(option))}</button>`;
     }).join('');
+    qa.innerHTML = `${actions}${nextAction}`;
   } else {
-    qa.innerHTML='';
+    qa.innerHTML = nextAction;
   }
+}
+
+function nextBlockedAgent(currentAgent) {
+  const currentPaneId = currentAgent && currentAgent.pane_id;
+  return sortedAgents(agents.filter(a => agentStatusGroup(a) === 'blocked' && a.pane_id !== currentPaneId))[0] || null;
+}
+
+function openNextBlocked(paneId) {
+  if (currentView === 'terminal') replaceView({view: 'terminal', paneId});
+  else openTerminal(paneId);
 }
 
 function closeTerminal() {
@@ -1169,13 +1597,21 @@ function syncActiveTerminal(refreshWhenRestored = false) {
   if (refreshWhenRestored) refreshPane();
 }
 
-function updateAppChrome(title = '🐑 herdr') {
+function updateAppChrome(title = APP_TITLE) {
   document.body.dataset.view = currentView;
   document.getElementById('appTitle').textContent = title;
 }
 
 function activeAgent() {
   return activePane ? agents.find(x => x.pane_id === activePane) : null;
+}
+
+function sendToAgent(agent, payload) {
+  if (!agent) return false;
+  const conn = connections.get(agent.relay_id);
+  if (!conn || !conn.ws || conn.ws.readyState !== 1) return false;
+  conn.ws.send(JSON.stringify({...payload, pane_id: agent.raw_pane_id}));
+  return true;
 }
 
 function sendToActive(payload) {
@@ -1229,8 +1665,19 @@ function respond(index, total){
   if(!activePane)return;
   if(typeof index!=='number'||index<0)return;
   if(!sendToActive({type:'respond',index,total}))return;
+  markPaneResponding(activePane);
   document.getElementById('quickActions').innerHTML='';
   setTimeout(refreshPane,500);
+}
+function respondForPane(paneId,index,total){
+  if(typeof index!=='number'||index<0)return;
+  const agent=agents.find(x=>x.pane_id===paneId);
+  if(!sendToAgent(agent,{type:'respond',index,total}))return;
+  markPaneResponding(paneId);
+  if(activePane===paneId){
+    document.getElementById('quickActions').innerHTML='';
+    setTimeout(refreshPane,500);
+  }
 }
 document.addEventListener('click', hideArrows);
 
