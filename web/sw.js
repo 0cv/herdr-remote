@@ -1,3 +1,5 @@
+importScripts('notification-icons.js?v=4');
+
 self.addEventListener('install', event => {
   event.waitUntil(self.skipWaiting());
 });
@@ -15,14 +17,12 @@ self.addEventListener('push', event => {
   }
 
   const title = payload.title || 'Herdr agent blocked';
-  const iconUrl = new URL('icons/icon-512.png', self.location.origin + '/').href;
-  const badgeUrl = new URL('icons/notification-badge.png', self.location.origin + '/').href;
   const options = {
     body: payload.body || 'An agent needs approval.',
     tag: payload.tag || 'herdr-blocked',
     renotify: true,
-    icon: iconUrl,
-    badge: badgeUrl,
+    icon: HERDR_NOTIFICATION_ICON,
+    badge: HERDR_NOTIFICATION_BADGE,
     data: {
       url: payload.url || './',
     },
@@ -35,24 +35,24 @@ self.addEventListener('notificationclick', event => {
   event.notification.close();
   const url = new URL(event.notification.data && event.notification.data.url || './', self.location.origin + '/').href;
 
+  // One action per click: the click's user activation only reliably funds a
+  // single focus/openWindow call, so never chain attempts. A visible window
+  // gets focused and routed in place; everything else (hidden, frozen, or no
+  // client) goes straight to openWindow, which launches/raises the installed
+  // PWA on Android.
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
-    for (const client of windows) {
-      if (client.url.startsWith(self.location.origin)) {
-        let targetClient = client;
-        if ('navigate' in client && client.url !== url) {
-          try {
-            targetClient = await client.navigate(url) || client;
-          } catch (_err) {
-            targetClient = client;
-          }
-        }
-        try {
-          targetClient.postMessage({type: 'herdr_notification_click', url});
-        } catch (_err) {}
-        return targetClient.focus();
-      }
+    const visible = windows.find(client =>
+      client.url.startsWith(self.location.origin) && client.visibilityState === 'visible');
+    if (visible) {
+      try {
+        visible.postMessage({type: 'herdr_notification_click', url});
+      } catch (_err) {}
+      try {
+        await visible.focus();
+      } catch (_err) {}
+      return;
     }
-    return self.clients.openWindow(url);
+    await self.clients.openWindow(url);
   })());
 });

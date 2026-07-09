@@ -284,6 +284,7 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
   </div>
 </div>
 
+<script src="notification-icons.js?v=4"></script>
 <script>
 const THEMES = ['dark','light','nord','solarized','rose'];
 const TERMINAL_FONT_SIZES = ['compact','regular','large'];
@@ -305,6 +306,10 @@ const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
 const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
 const PUSH_ENABLED_KEY = 'herdr_push_enabled';
+// Version query defeats CDN edge caching of the worker script: a changed URL is
+// a guaranteed cache miss, so update checks always see the latest code. Bump
+// whenever sw.js changes.
+const SW_SCRIPT_URL = 'sw.js?v=4';
 const PUSH_CLIENT_KEY = 'herdr_push_client_id';
 const PUSH_VAPID_KEY_PREFIX = 'herdr_push_vapid_key_';
 const ANSI_COLORS = {
@@ -417,7 +422,7 @@ async function registerServiceWorker() {
     return null;
   }
   try {
-    serviceWorkerRegistration = await navigator.serviceWorker.register('sw.js');
+    serviceWorkerRegistration = await navigator.serviceWorker.register(SW_SCRIPT_URL);
     renderNotificationSetting();
     refreshPushSubscriptionState();
     return serviceWorkerRegistration;
@@ -450,7 +455,7 @@ async function readyServiceWorker(relayId = null) {
     if (pushServiceWorkerRegistrations.has(relayId)) return pushServiceWorkerRegistrations.get(relayId);
     if (!('serviceWorker' in navigator)) return null;
     try {
-      const registration = await navigator.serviceWorker.register('sw.js', {scope: relayPushScope(relayId)});
+      const registration = await navigator.serviceWorker.register(SW_SCRIPT_URL, {scope: relayPushScope(relayId)});
       pushServiceWorkerRegistrations.set(relayId, registration);
       return registration;
     } catch (_err) {
@@ -1671,8 +1676,8 @@ function notifyBlockedAgent(agent) {
     body,
     tag: notificationTag(agent),
     renotify: true,
-    icon: new URL('icons/icon-512.png', location.origin + '/').href,
-    badge: new URL('icons/notification-badge.png', location.origin + '/').href,
+    icon: HERDR_NOTIFICATION_ICON,
+    badge: HERDR_NOTIFICATION_BADGE,
     data: {
       url: viewUrl({view: 'terminal', paneId: agent.pane_id}),
       paneId: agent.pane_id,
