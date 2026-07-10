@@ -36,6 +36,7 @@ check: test
 	node -e 'const fs=require("fs");const html=fs.readFileSync("web/index.html","utf8");const start=html.lastIndexOf("<script>");const end=html.indexOf("</script>",start);if(start<0||end<0)throw new Error("inline script not found");new Function(html.slice(start+8,end));'
 	node tests/test_web_terminal.js
 	node tests/test_web_activity.js
+	node tests/test_web_launch.js
 
 test:
 	uv run --with 'websockets>=14.0' --with 'pywebpush>=2.0.0' --with 'py-vapid>=1.9.2' --with 'cryptography>=42.0.0' python -m unittest discover -s tests -v

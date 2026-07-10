@@ -59,12 +59,21 @@ body[data-view="terminal"] #manageButton { display: block; }
 .page-view { display: none; flex: 1; overflow-y: auto; padding: 16px; }
 .page-view h2 { font-size: 0.9rem; margin-bottom: 12px; }
 .form-card { background: var(--surface); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
-.form-card label { display: block; margin: 10px 0 6px; color: var(--muted); font-size: 0.72rem; }
+.form-card label, .form-card .field-label { display: block; margin: 10px 0 6px; color: var(--muted); font-size: 0.72rem; }
 .form-card label:first-child { margin-top: 0; }
 .form-card input, .form-card select, .form-card textarea { width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
 .form-card textarea { min-height: 92px; resize: vertical; }
+.form-card .hint { margin-top: 5px; color: var(--muted); font-size: 0.65rem; }
 .form-card button, .dialog-panel button { min-height: 42px; margin-top: 10px; padding: 9px 14px; border: 0; border-radius: 7px; background: var(--green); color: #050505; font-weight: 700; cursor: pointer; }
 .form-card button:disabled, .dialog-panel button:disabled { opacity: 0.45; cursor: default; }
+.directory-browser { overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+.directory-toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; border-bottom: 1px solid var(--border); }
+.directory-current { min-width: 0; overflow: hidden; color: var(--text); font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
+.form-card .directory-toolbar button { flex: none; min-height: 32px; margin: 0; padding: 4px 10px; background: var(--surface); color: var(--text); }
+.directory-list { max-height: 220px; overflow-y: auto; padding: 3px; }
+.form-card .directory-list button { display: block; width: 100%; min-height: 36px; margin: 0; padding: 6px 9px; border-radius: 5px; background: transparent; color: var(--text); font-weight: 500; text-align: left; overflow-wrap: anywhere; }
+.form-card .directory-list button:active { background: var(--border); }
+.directory-message { padding: 10px; color: var(--muted); font-size: 0.68rem; }
 .form-status { min-height: 1rem; margin-top: 8px; color: var(--muted); font-size: 0.7rem; }
 .form-status.error { color: var(--red); }
 .activity-list { display: flex; flex-direction: column; gap: 7px; }
@@ -286,16 +295,24 @@ body[data-view="terminal"] #manageButton { display: block; }
   <h2 id="launchTitle">Start Agent</h2>
   <form class="form-card" id="launchForm" onsubmit="startAgent(event)">
     <label for="launchRelay">Computer</label>
-    <select id="launchRelay" required onchange="renderLaunchOptions()"></select>
+    <select id="launchRelay" required onchange="renderLaunchOptions(true)"></select>
     <label for="launchProfile">Agent</label>
-    <select id="launchProfile" required></select>
+    <select id="launchProfile" required onchange="updateLaunchName()"></select>
+    <div class="field-label" id="launchCwdLabel">Working Directory</div>
+    <input id="launchCwd" type="hidden" />
+    <div class="directory-browser" aria-labelledby="launchCwdLabel">
+      <div class="directory-toolbar">
+        <button id="launchDirectoryUp" type="button" onclick="openParentLaunchDirectory()" aria-label="Open parent directory">↑</button>
+        <div class="directory-current" id="launchDirectoryCurrent" aria-live="polite">Loading…</div>
+      </div>
+      <div class="directory-list" id="launchDirectoryList" aria-label="Subdirectories"></div>
+    </div>
+    <div class="hint">The folder shown above is used. Tap a subfolder to open it.</div>
     <label for="launchName">Name</label>
-    <input id="launchName" type="text" required maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,47}" placeholder="mobile-task" autocomplete="off" />
-    <label for="launchCwd">Working directory</label>
-    <input id="launchCwd" type="text" required list="projectPaths" placeholder="/home/me/Development/project" autocapitalize="off" autocomplete="off" spellcheck="false" />
-    <datalist id="projectPaths"></datalist>
+    <input id="launchName" type="text" required maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,47}" placeholder="project-codex" autocomplete="off" />
     <label for="launchPrompt">Initial task <span style="font-weight:normal">(optional)</span></label>
     <textarea id="launchPrompt" maxlength="20000" placeholder="Describe the task to start…"></textarea>
+    <div class="hint">Sent to the agent as its first prompt after it starts.</div>
     <button id="launchSubmit" type="submit">Start Agent</button>
     <div class="form-status" id="launchStatus" aria-live="polite"></div>
   </form>
@@ -1471,7 +1488,7 @@ function connectRelay(relay) {
     return;
   }
   disconnectRelay(relay.id);
-  const conn = { relay, ws: null, status: 'connecting', reconnectTimer: null, closed: false, agentProfiles: [], host: '' };
+  const conn = { relay, ws: null, status: 'connecting', reconnectTimer: null, closed: false, agentProfiles: [], capabilities: [], directoryBrowser: null, directoryLoading: false, directoryError: '', host: '' };
   connections.set(relay.id, conn);
   updateStatusDot();
   renderRelayList();
@@ -1551,6 +1568,7 @@ function handleMessage(relayId, msg) {
     if (conn) {
       conn.vapidPublicKey = msg.vapid_public_key || '';
       conn.host = msg.host || '';
+      conn.capabilities = Array.isArray(msg.capabilities) ? msg.capabilities.filter(Boolean) : [];
       conn.agentProfiles = Array.isArray(msg.agent_profiles) ? msg.agent_profiles.filter(profile => profile && profile.id) : [];
       if (pushOptedIn()) registerPushSubscription(relayId);
       else refreshPushSubscriptionState(relayId);
@@ -2669,12 +2687,109 @@ function renderActivity() {
   }).join('');
 }
 
-function renderLaunchOptions() {
+function launchNamePart(value, fallback) {
+  const normalized = String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return normalized.replace(/[^a-z0-9._-]+/g, '-').replace(/^[^a-z0-9]+|[._-]+$/g, '') || fallback;
+}
+
+function suggestedLaunchName(cwd, profileId) {
+  const parts = String(cwd || '').replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean);
+  const directory = launchNamePart(parts.pop(), 'project');
+  const agent = launchNamePart(profileId, 'agent');
+  const suffix = `-${agent}`;
+  return `${directory.slice(0, Math.max(1, 48 - suffix.length))}${suffix}`;
+}
+
+function updateLaunchName() {
+  const nameInput = document.getElementById('launchName');
+  const cwd = document.getElementById('launchCwd')?.value || '';
+  const profile = document.getElementById('launchProfile')?.value || '';
+  if (nameInput) nameInput.value = suggestedLaunchName(cwd, profile);
+}
+
+function updateLaunchSubmitState() {
+  const relayId = document.getElementById('launchRelay')?.value || '';
+  const conn = connections.get(relayId);
+  const profiles = conn && Array.isArray(conn.agentProfiles) ? conn.agentProfiles : [];
+  const cwd = document.getElementById('launchCwd')?.value || '';
+  document.getElementById('launchSubmit').disabled = !conn || !profiles.length || !cwd || conn.directoryLoading;
+}
+
+function renderLaunchDirectory(recalculateName = false) {
+  const relayId = document.getElementById('launchRelay')?.value || '';
+  const conn = connections.get(relayId);
+  const state = conn && conn.directoryBrowser;
+  const cwdInput = document.getElementById('launchCwd');
+  const current = document.getElementById('launchDirectoryCurrent');
+  const up = document.getElementById('launchDirectoryUp');
+  const list = document.getElementById('launchDirectoryList');
+  if (!cwdInput || !current || !up || !list) return;
+
+  const previousCwd = cwdInput.value;
+  cwdInput.value = state && state.current ? state.current.path : '';
+  current.textContent = state && state.current ? state.current.label : 'Home directory';
+  up.disabled = !state || !state.parent || Boolean(conn && conn.directoryLoading);
+
+  if (conn && conn.directoryLoading) {
+    list.innerHTML = '<div class="directory-message">Loading folders…</div>';
+  } else if (conn && !conn.capabilities.includes('directory_browser')) {
+    list.innerHTML = '<div class="directory-message">Update and restart this computer’s relay to browse directories.</div>';
+  } else if (conn && conn.directoryError) {
+    list.innerHTML = `<div class="directory-message">${escapeHtml(conn.directoryError)}</div>`;
+  } else if (!state) {
+    list.innerHTML = '<div class="directory-message">Directory browser unavailable.</div>';
+  } else if (!state.directories.length) {
+    list.innerHTML = '<div class="directory-message">No subdirectories.</div>';
+  } else {
+    list.innerHTML = state.directories.map(directory => {
+      return `<button type="button" data-path="${escapeHtml(directory.path)}" onclick="openLaunchDirectory(this.dataset.path)"><span aria-hidden="true">📁</span> ${escapeHtml(directory.name)}</button>`;
+    }).join('');
+  }
+
+  const nameInput = document.getElementById('launchName');
+  if (recalculateName || previousCwd !== cwdInput.value || (nameInput && !nameInput.value)) updateLaunchName();
+  updateLaunchSubmitState();
+}
+
+async function loadLaunchDirectory(path = '') {
+  const relayId = document.getElementById('launchRelay')?.value || '';
+  const conn = connections.get(relayId);
+  if (!conn || conn.directoryLoading) return;
+  conn.directoryLoading = true;
+  conn.directoryError = '';
+  renderLaunchDirectory();
+  let navigated = false;
+  try {
+    const result = await sendCommand(relayId, {type: 'list_directories', path}, 10000);
+    if (connections.get(relayId) !== conn) return;
+    const data = result.data;
+    if (!data || !data.current || !Array.isArray(data.directories)) throw new Error('Relay returned an invalid directory listing');
+    conn.directoryBrowser = data;
+    navigated = true;
+  } catch (error) {
+    conn.directoryError = error.message;
+  } finally {
+    conn.directoryLoading = false;
+    if (document.getElementById('launchRelay')?.value === relayId) renderLaunchDirectory(navigated);
+  }
+}
+
+function openLaunchDirectory(path) {
+  loadLaunchDirectory(path);
+}
+
+function openParentLaunchDirectory() {
+  const relayId = document.getElementById('launchRelay')?.value || '';
+  const parent = connections.get(relayId)?.directoryBrowser?.parent;
+  if (parent) loadLaunchDirectory(parent);
+}
+
+function renderLaunchOptions(recalculateName = false) {
   const relaySelect = document.getElementById('launchRelay');
   const profileSelect = document.getElementById('launchProfile');
-  const pathList = document.getElementById('projectPaths');
-  if (!relaySelect || !profileSelect || !pathList) return;
+  if (!relaySelect || !profileSelect) return;
   const previousRelay = relaySelect.value;
+  const previousProfile = profileSelect.value;
   const connected = relayConfigs.filter(relay => {
     const conn = connections.get(relay.id);
     return conn && conn.status === 'connected';
@@ -2688,17 +2803,10 @@ function renderLaunchOptions() {
   profileSelect.innerHTML = profiles.length
     ? profiles.map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.label || profile.id)}</option>`).join('')
     : '<option value="">No agent profiles available</option>';
-  const paths = [...new Set(agents.filter(agent => agent.relay_id === relaySelect.value).map(agent => agent.cwd).filter(Boolean))];
-  pathList.innerHTML = paths.sort().map(path => `<option value="${escapeHtml(path)}"></option>`).join('');
-  const cwdInput = document.getElementById('launchCwd');
-  if (cwdInput && !cwdInput.value && paths.length) cwdInput.value = paths[0];
-  const nameInput = document.getElementById('launchName');
-  if (nameInput && !nameInput.value) {
-    const profile = profileSelect.value || 'agent';
-    const stamp = new Date().toTimeString().slice(0, 5).replace(':', '');
-    nameInput.value = `mobile-${profile}-${stamp}`;
-  }
-  document.getElementById('launchSubmit').disabled = !conn || !profiles.length;
+  if (profiles.some(profile => profile.id === previousProfile)) profileSelect.value = previousProfile;
+
+  renderLaunchDirectory(recalculateName);
+  if (conn && conn.capabilities.includes('directory_browser') && !conn.directoryBrowser && !conn.directoryLoading) loadLaunchDirectory();
 }
 
 async function startAgent(event) {

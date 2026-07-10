@@ -81,6 +81,7 @@ AGENT_PROFILE_CANDIDATES = {
     "claude": "Claude Code",
     "opencode": "OpenCode",
 }
+RELAY_CAPABILITIES = ["directory_browser"]
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
@@ -348,6 +349,45 @@ def load_agent_profiles():
             "argv": [executable],
         }
     return profiles
+
+
+def list_project_directory(value=""):
+    try:
+        home = Path.home().resolve()
+    except OSError:
+        return None, "Home directory could not be resolved"
+
+    current, error = resolve_agent_cwd(value or str(home))
+    if error:
+        return None, error
+
+    directories = []
+    try:
+        children = list(current.iterdir())
+    except OSError:
+        return None, "Working directory could not be read"
+
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        try:
+            resolved = child.resolve()
+        except OSError:
+            continue
+        if not resolved.is_dir() or not resolved.is_relative_to(home):
+            continue
+        if not os.access(resolved, os.R_OK | os.X_OK):
+            continue
+        directories.append({"name": child.name, "path": str(resolved)})
+
+    relative = current.relative_to(home)
+    current_label = "~" if current == home else f"~/{relative.as_posix()}"
+    parent = "" if current == home else str(current.parent)
+    return {
+        "current": {"path": str(current), "label": current_label},
+        "parent": parent,
+        "directories": sorted(directories, key=lambda item: (item["name"].casefold(), item["name"])),
+    }, ""
 
 
 def resolve_agent_cwd(value):
@@ -1109,6 +1149,19 @@ async def handle_send_keys_command(ws, msg):
         await send_command_result(ws, request_id, "keys", ok, error=error, phase="completed" if ok else "failed", pane_id=pane_id)
 
 
+async def handle_list_directories_command(ws, msg):
+    request_id = request_id_for(msg)
+    data, error = await asyncio.to_thread(list_project_directory, msg.get("path", ""))
+    await send_command_result(
+        ws,
+        request_id,
+        "list_directories",
+        not error,
+        error=error,
+        data=data,
+    )
+
+
 async def handle_agent_start_command(ws, msg):
     request_id = request_id_for(msg)
     profiles = load_agent_profiles()
@@ -1250,6 +1303,7 @@ async def handle_client(ws):
             "type": "push_config",
             "vapid_public_key": ensure_vapid_public_key(),
             "host": LOCAL_HOST,
+            "capabilities": RELAY_CAPABILITIES,
             "agent_profiles": [
                 {"id": profile["id"], "label": profile["label"]}
                 for profile in profiles.values()
@@ -1307,6 +1361,8 @@ async def handle_client(ws):
                 await handle_submit_prompt_command(ws, msg)
             elif msg_type == "send_keys":
                 await handle_send_keys_command(ws, msg)
+            elif msg_type == "list_directories":
+                await handle_list_directories_command(ws, msg)
             elif msg_type == "send_text":
                 request_id = request_id_for(msg)
                 pane_id = msg.get("pane_id", "")

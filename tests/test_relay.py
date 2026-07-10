@@ -76,6 +76,43 @@ class RelayHelpersTest(unittest.TestCase):
         self.assertEqual(set(profiles), {"codex", "claude"})
         self.assertEqual(profiles["claude"]["argv"], ["/usr/bin/claude"])
 
+    def test_project_directory_navigation_lists_one_level_and_excludes_hidden_folders(self):
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as outside_dir:
+            home = Path(temp_dir)
+            development = home / "Development"
+            project = development / "relay"
+            hidden = home / ".private"
+            outside_link = home / "outside"
+            for path in (project, hidden):
+                path.mkdir(parents=True, exist_ok=True)
+            outside_link.symlink_to(outside_dir, target_is_directory=True)
+
+            with patch.object(relay.Path, "home", return_value=home):
+                root, root_error = relay.list_project_directory()
+                child, child_error = relay.list_project_directory(str(development))
+                outside, outside_error = relay.list_project_directory(outside_dir)
+
+        self.assertEqual(root_error, "")
+        self.assertEqual(root["current"], {"path": str(home), "label": "~"})
+        self.assertEqual(root["parent"], "")
+        self.assertEqual([entry["name"] for entry in root["directories"]], ["Development"])
+        self.assertEqual(child_error, "")
+        self.assertEqual(child["parent"], str(home))
+        self.assertEqual(child["directories"], [{"name": "relay", "path": str(project)}])
+        self.assertIsNone(outside)
+        self.assertIn("home directory", outside_error)
+
+    def test_project_directory_navigation_has_no_flat_catalog_limit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            for index in range(255):
+                (home / f"project-{index:03d}").mkdir()
+            with patch.object(relay.Path, "home", return_value=home):
+                listing, error = relay.list_project_directory()
+
+        self.assertEqual(error, "")
+        self.assertEqual(len(listing["directories"]), 255)
+
     def test_agent_cwd_must_be_within_the_user_home(self):
         with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as outside:
             with patch.object(relay.Path, "home", return_value=Path(allowed)):
