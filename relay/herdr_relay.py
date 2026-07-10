@@ -82,6 +82,7 @@ AGENT_PROFILE_CANDIDATES = {
     "claude": "Claude Code",
     "opencode": "OpenCode",
 }
+MACOS_PROTECTED_HOME_DIRECTORIES = {"Desktop", "Documents", "Downloads"}
 RELAY_CAPABILITIES = ["directory_browser"]
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
@@ -392,7 +393,12 @@ def list_project_directory(value=""):
             continue
         if not os.access(resolved, os.R_OK | os.X_OK):
             continue
-        if not directory_is_browsable(resolved):
+        needs_macos_privacy_probe = (
+            sys.platform == "darwin"
+            and current == home
+            and child.name in MACOS_PROTECTED_HOME_DIRECTORIES
+        )
+        if needs_macos_privacy_probe and not directory_is_browsable(resolved):
             continue
         directories.append({"name": child.name, "path": str(resolved)})
 

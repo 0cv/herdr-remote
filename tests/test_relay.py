@@ -88,16 +88,14 @@ class RelayHelpersTest(unittest.TestCase):
                 path.mkdir(parents=True, exist_ok=True)
             outside_link.symlink_to(outside_dir, target_is_directory=True)
 
-            real_scandir = relay.os.scandir
-
             def macos_scandir(path):
-                if Path(path) == downloads:
-                    raise PermissionError("Operation not permitted")
-                return real_scandir(path)
+                self.assertEqual(Path(path), downloads)
+                raise PermissionError("Operation not permitted")
 
             with (
                 patch.object(relay.Path, "home", return_value=home),
                 patch.object(relay.os, "scandir", side_effect=macos_scandir),
+                patch.object(relay.sys, "platform", "darwin"),
             ):
                 root, root_error = relay.list_project_directory()
                 child, child_error = relay.list_project_directory(str(development))
