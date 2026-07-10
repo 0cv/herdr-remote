@@ -1,14 +1,36 @@
 # Herdr Mobile Relay Quick Start
 
-Get mobile approval for local herdr agents with a temporary Cloudflare quick tunnel.
+Get mobile approval for local Herdr agents with a temporary Cloudflare quick tunnel.
 
-## 1. Start the relay and tunnel
+> [!IMPORTANT]
+> Herdr Mobile Relay currently supports only Linux and macOS. Windows is not supported.
+
+## 1. Prepare the repository
 
 ```bash
-./relay/start.sh
+git clone https://github.com/0cv/herdr-mobile-relay.git
+cd herdr-mobile-relay
+make setup
 ```
 
-The script prints:
+`make setup` creates the local web and relay config files, generates the relay token, and reports any missing prerequisites. See the [README requirements](README.md#requirements) for details.
+
+## 2. Deploy the phone app
+
+Host `web/` on any HTTPS static host, or deploy it to Cloudflare Pages:
+
+```bash
+# edit WEB_PROJECT in .env first if needed
+make web-deploy
+```
+
+## 3. Start the relay and tunnel
+
+```bash
+make quick-start
+```
+
+The command prints:
 
 ```text
 Tunnel URL: https://example.trycloudflare.com
@@ -18,50 +40,14 @@ Token:      0123456789abcdef0123456789abcdef
 
 Quick tunnel hostnames are temporary and change when the tunnel restarts. The token is stored in `relay/.env` and reused on later quick-start runs.
 
-## 2. Open the web app
+## 4. Connect the phone app
 
-Open your deployed copy of `web/` on your phone. In Settings, add the printed `wss://...trycloudflare.com` URL and token.
+Open the deployed web app on your phone. In Settings, add the printed `wss://...trycloudflare.com` URL and token. Install the app from Safari's Share menu on iPhone/iPad or Chrome's install menu on Android.
 
-To deploy the web app:
-
-```bash
-cp .env.example .env
-# edit WEB_PROJECT in .env if needed
-make web-deploy
-```
-
-## 3. Use stable relay hostnames
-
-For fixed `wss://` URLs, create one named Cloudflare tunnel and one DNS hostname per computer:
+For permanent hostnames and background startup, follow [Stable Hostnames](README.md#stable-hostnames) and then run the platform-detecting service installer:
 
 ```bash
-cloudflared tunnel login
-cloudflared tunnel create herdr-mobile-relay-mac
-cloudflared tunnel route dns herdr-mobile-relay-mac relay-mac.yourdomain.com
-
-cloudflared tunnel create herdr-mobile-relay-fedora
-cloudflared tunnel route dns herdr-mobile-relay-fedora relay-fedora.yourdomain.com
+make service-install
 ```
 
-Install the background service for the current computer:
-
-```bash
-# macOS
-make macos-service-install
-
-# Fedora/Linux
-make linux-service-install
-```
-
-Then use each computer's `wss://` hostname in the web app.
-
-## 4. Show two computers on one page
-
-Run one relay and one Cloudflare tunnel per computer. Give each computer a distinct hostname:
-
-```text
-wss://relay-mac.yourdomain.com
-wss://relay-fedora.yourdomain.com
-```
-
-In the web app Settings, add both relay URLs. The browser connects to both relays directly and merges the agents on one page.
+Repeat the relay setup on each Linux or macOS computer and add every relay URL in Settings; the browser merges their agents client-side.

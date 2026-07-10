@@ -43,15 +43,53 @@ body[data-view="terminal"] { --header-height: 38px; }
 .header h1 { font-size: 1rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header button { background: none; border: none; color: var(--muted); font-size: 1.2rem; cursor: pointer; padding: 4px; min-width: 30px; }
 .header-back { display: none; }
+body:not([data-view="agents"]) .header-back { display: block; }
+#manageButton { display: none; }
 body[data-view="terminal"] .header { padding: 0 10px; gap: 6px; }
 body[data-view="terminal"] .header h1 { display: flex; flex-direction: column; justify-content: center; gap: 1px; font-size: 0.78rem; font-weight: 500; line-height: 1.1; }
 body[data-view="terminal"] .header .title-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body[data-view="terminal"] .header .title-meta { color: var(--muted); font-size: 0.62rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body[data-view="terminal"] .header-back { display: block; }
 body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { display: none; }
+body[data-view="terminal"] #launchButton, body[data-view="terminal"] #activityButton, body[data-view="terminal"] #settingsButton { display: none; }
+body[data-view="terminal"] #manageButton { display: block; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
 .view { flex: 1; overflow-y: auto; }
+.page-view { display: none; flex: 1; overflow-y: auto; padding: 16px; }
+.page-view h2 { font-size: 0.9rem; margin-bottom: 12px; }
+.form-card { background: var(--surface); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.form-card label { display: block; margin: 10px 0 6px; color: var(--muted); font-size: 0.72rem; }
+.form-card label:first-child { margin-top: 0; }
+.form-card input, .form-card select, .form-card textarea { width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+.form-card textarea { min-height: 92px; resize: vertical; }
+.form-card button, .dialog-panel button { min-height: 42px; margin-top: 10px; padding: 9px 14px; border: 0; border-radius: 7px; background: var(--green); color: #050505; font-weight: 700; cursor: pointer; }
+.form-card button:disabled, .dialog-panel button:disabled { opacity: 0.45; cursor: default; }
+.form-status { min-height: 1rem; margin-top: 8px; color: var(--muted); font-size: 0.7rem; }
+.form-status.error { color: var(--red); }
+.activity-list { display: flex; flex-direction: column; gap: 7px; }
+.activity-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+.activity-item .activity-title { display: flex; gap: 8px; align-items: baseline; font-size: 0.78rem; }
+.activity-item .activity-title strong { flex: 1; }
+.activity-item .activity-time { color: var(--muted); font-size: 0.62rem; white-space: nowrap; }
+.activity-item .activity-meta { margin-top: 4px; color: var(--muted); font-size: 0.64rem; }
+.activity-status { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.activity-search { width: 100%; margin-bottom: 10px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.75rem; }
+.dialog-screen { position: fixed; inset: 0; z-index: 220; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,0.78); backdrop-filter: blur(6px); }
+.dialog-screen.active { display: flex; }
+.dialog-panel { width: min(390px, 100%); padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 16px 60px rgba(0,0,0,0.45); }
+.dialog-panel h2 { margin-bottom: 5px; font-size: 1rem; }
+.dialog-panel p { margin-bottom: 12px; color: var(--muted); font-size: 0.7rem; }
+.dialog-panel label { display: block; margin: 10px 0 5px; color: var(--muted); font-size: 0.7rem; }
+.dialog-panel input { width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
+.dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dialog-actions button { margin-top: 8px; }
+.dialog-actions button.wide { grid-column: 1 / -1; }
+.dialog-panel button.secondary { background: var(--border); color: var(--text); }
+.dialog-panel button.danger { background: var(--red); color: #fff; }
+.toast { position: fixed; z-index: 300; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); display: none; width: min(420px, calc(100% - 24px)); transform: translateX(-50%); padding: 10px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 12px 40px rgba(0,0,0,0.45); font-size: 0.75rem; }
+.toast.active { display: block; }
+.toast.error { border-color: var(--red); color: var(--red); }
 
 /* Settings */
 .settings { display: none; padding: 16px; }
@@ -110,7 +148,9 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
 .term-header .back { background: none; border: none; color: var(--blue); font-size: 1.4rem; cursor: pointer; padding: 4px 8px; }
 .term-header .title { flex: 1; font-size: 0.8rem; font-weight: 500; }
 .term-header .refresh-btn { background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
-.term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: var(--terminal-bg); font-family: 'SF Mono', 'Menlo', monospace; font-size: var(--terminal-font-size); line-height: 1.5; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: var(--terminal-text); -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 16px; background: var(--terminal-bg); font-family: 'SF Mono', 'Menlo', monospace; font-size: var(--terminal-font-size); line-height: 1.5; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: var(--terminal-text); -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.ansi-line { display: block; min-height: 1.5em; box-sizing: border-box; overflow: hidden; }
+.ansi-line-background { width: 100%; }
 .term-separator { display: block; height: 1px; margin: 0.35em 0; background: currentColor; opacity: 0.3; }
 .jump-bottom { display: none; position: absolute; right: 12px; bottom: calc(var(--bottom-chrome-height, 94px) + 10px); z-index: 4; min-width: 46px; min-height: 34px; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); box-shadow: 0 8px 24px rgba(0,0,0,0.35); font-size: 1rem; cursor: pointer; }
 .jump-bottom.active { display: flex; }
@@ -179,6 +219,9 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
   <span class="dot" id="statusDot"></span>
   <h1 id="appTitle">🐑 herdr</h1>
   <span id="agentCount" style="font-size:0.7rem;color:var(--muted)"></span>
+  <button id="launchButton" onclick="toggleLaunch()" aria-label="Start agent">＋</button>
+  <button id="activityButton" onclick="toggleActivity()" aria-label="Activity history">◷</button>
+  <button id="manageButton" onclick="openManageDialog()" aria-label="Manage agent">•••</button>
   <button id="settingsButton" onclick="toggleSettings()" aria-label="Settings">⚙</button>
 </div>
 
@@ -239,6 +282,31 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
   </div>
 </div>
 
+<section class="page-view" id="launchView" aria-labelledby="launchTitle">
+  <h2 id="launchTitle">Start Agent</h2>
+  <form class="form-card" id="launchForm" onsubmit="startAgent(event)">
+    <label for="launchRelay">Computer</label>
+    <select id="launchRelay" required onchange="renderLaunchOptions()"></select>
+    <label for="launchProfile">Agent</label>
+    <select id="launchProfile" required></select>
+    <label for="launchName">Name</label>
+    <input id="launchName" type="text" required maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,47}" placeholder="mobile-task" autocomplete="off" />
+    <label for="launchCwd">Working directory</label>
+    <input id="launchCwd" type="text" required list="projectPaths" placeholder="/home/me/Development/project" autocapitalize="off" autocomplete="off" spellcheck="false" />
+    <datalist id="projectPaths"></datalist>
+    <label for="launchPrompt">Initial task <span style="font-weight:normal">(optional)</span></label>
+    <textarea id="launchPrompt" maxlength="20000" placeholder="Describe the task to start…"></textarea>
+    <button id="launchSubmit" type="submit">Start Agent</button>
+    <div class="form-status" id="launchStatus" aria-live="polite"></div>
+  </form>
+</section>
+
+<section class="page-view" id="activityView" aria-labelledby="activityTitle">
+  <h2 id="activityTitle">Activity</h2>
+  <input class="activity-search" id="activitySearch" type="search" placeholder="Search activity…" aria-label="Search activity" oninput="renderActivity()" />
+  <div class="activity-list" id="activityList" aria-live="polite"></div>
+</section>
+
 <div class="view" id="agentListView">
   <div class="agents" id="agents"></div>
 </div>
@@ -260,7 +328,7 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
       </svg>
     </button>
     <div class="composer-field" id="composerField">
-      <textarea id="termInput" rows="1" placeholder="Type…" autocomplete="on" autocorrect="on" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" oninput="handleComposerInput()"></textarea>
+      <textarea id="termInput" rows="1" placeholder="Type…" autocomplete="on" autocorrect="on" autocapitalize="sentences" spellcheck="true" enterkeyhint="enter" oninput="handleComposerInput()"></textarea>
       <button class="input-clear-btn" id="clearInputButton" onclick="clearPromptText()" aria-label="Clear prompt text">×</button>
     </div>
     <button class="send-btn" id="sendButton" onclick="submitPrompt()" aria-label="Send prompt" disabled>➤</button>
@@ -270,7 +338,6 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
   <div class="quick-actions" id="quickActions"></div>
   <div class="term-keys">
     <button onclick="cancelPrompt()">Esc</button>
-    <button onclick="interruptPrompt()">^C</button>
     <button onclick="sendKey('Tab')">Tab</button>
     <span class="spacer"></span>
     <div class="arrow-toggle">
@@ -283,6 +350,23 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
     </div>
   </div>
 </div>
+
+<div class="dialog-screen" id="manageDialog" role="dialog" aria-modal="true" aria-labelledby="manageTitle" aria-describedby="manageDescription">
+  <div class="dialog-panel">
+    <h2 id="manageTitle">Manage Agent</h2>
+    <p id="manageDescription"></p>
+    <label for="manageName">New name</label>
+    <input id="manageName" type="text" maxlength="80" autocomplete="off" />
+    <div class="dialog-actions">
+      <button type="button" onclick="renameActiveAgent()">Rename</button>
+      <button type="button" class="secondary" onclick="clearActiveAgent()">Clear Agent</button>
+      <button type="button" class="danger wide" onclick="stopActiveAgent()">Stop Agent</button>
+      <button type="button" class="secondary wide" onclick="closeManageDialog()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="notification-icons.js?v=4"></script>
 <script>
@@ -306,15 +390,17 @@ const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
 const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
 const PUSH_ENABLED_KEY = 'herdr_push_enabled';
+const HANDLED_NOTIFICATION_ACTIONS_KEY = 'herdr_handled_notification_actions';
+const COMMAND_TIMEOUT_MS = 15000;
 // Version query defeats CDN edge caching of the worker script: a changed URL is
 // a guaranteed cache miss, so update checks always see the latest code. Bump
 // whenever sw.js changes.
-const SW_SCRIPT_URL = 'sw.js?v=4';
+const SW_SCRIPT_URL = 'sw.js?v=5';
 const PUSH_CLIENT_KEY = 'herdr_push_client_id';
 const PUSH_VAPID_KEY_PREFIX = 'herdr_push_vapid_key_';
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
-  34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
+  34: '#5fafff', 35: '#d75fff', 36: '#1abc9c', 37: '#e5e5e5',
   90: '#777', 91: '#ff8080', 92: '#80ff80', 93: '#ffff80',
   94: '#80bfff', 95: '#ff80ff', 96: '#80ffff', 97: '#fff'
 };
@@ -328,7 +414,10 @@ let notificationSyncing = false;
 let notificationStopping = false;
 let pendingNotificationTarget = null;
 let pendingImageUploads = new Map();
+let pendingRequests = new Map();
+let activities = [];
 let uploadStatusTimer = null;
+let toastTimer = null;
 let lastTerminalDisplayContent = '';
 
 // Settings
@@ -1120,6 +1209,16 @@ function toggleSettings() {
   else navigateTo({view: 'settings'});
 }
 
+function toggleLaunch() {
+  if (currentView === 'launch') closeCurrentView();
+  else navigateTo({view: 'launch'});
+}
+
+function toggleActivity() {
+  if (currentView === 'activity') closeCurrentView();
+  else navigateTo({view: 'activity'});
+}
+
 function updateSettingsStatus() {
   const total = relayConfigs.length;
   const connected = [...connections.values()].filter(c => c.status === 'connected').length;
@@ -1131,6 +1230,8 @@ function updateSettingsStatus() {
 
 function viewUrl(state) {
   if (state.view === 'settings') return '#settings';
+  if (state.view === 'launch') return '#launch';
+  if (state.view === 'activity') return '#activity';
   if (state.view === 'terminal') return `#pane=${encodeURIComponent(state.paneId)}`;
   if (state.view === 'notification' && state.target) return `#notify=${encodeURIComponent(JSON.stringify(state.target))}`;
   return location.pathname + location.search;
@@ -1158,6 +1259,8 @@ function closeCurrentView() {
 
 function applyView(state) {
   if (state.view === 'settings') showSettingsView();
+  else if (state.view === 'launch') showLaunchView();
+  else if (state.view === 'activity') showActivityView();
   else if (state.view === 'terminal' && state.paneId) showTerminalView(state.paneId);
   else if (state.view === 'notification' && state.target) openNotificationTarget(state.target);
   else showAgentListView();
@@ -1170,6 +1273,8 @@ function showAgentListView() {
   clearInterval(refreshInterval);
   updateAppChrome();
   document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('launchView').style.display = 'none';
+  document.getElementById('activityView').style.display = 'none';
   document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
   document.getElementById('agentListView').style.display = '';
 }
@@ -1182,14 +1287,47 @@ function showSettingsView() {
   updateAppChrome('Settings');
   document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
   document.getElementById('agentListView').style.display = 'none';
+  document.getElementById('launchView').style.display = 'none';
+  document.getElementById('activityView').style.display = 'none';
   document.getElementById('settingsView').style.display = 'block';
   renderNotificationSetting();
   renderRelayList();
   updateSettingsStatus();
 }
 
+function showLaunchView() {
+  currentView = 'launch';
+  activePane = null;
+  activePaneSnapshot = null;
+  clearInterval(refreshInterval);
+  updateAppChrome('Start Agent');
+  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
+  document.getElementById('agentListView').style.display = 'none';
+  document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('activityView').style.display = 'none';
+  document.getElementById('launchView').style.display = 'block';
+  renderLaunchOptions();
+}
+
+function showActivityView() {
+  currentView = 'activity';
+  activePane = null;
+  activePaneSnapshot = null;
+  clearInterval(refreshInterval);
+  updateAppChrome('Activity');
+  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
+  document.getElementById('agentListView').style.display = 'none';
+  document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('launchView').style.display = 'none';
+  document.getElementById('activityView').style.display = 'block';
+  requestActivityHistory();
+  renderActivity();
+}
+
 function stateFromLocation() {
   if (location.hash === '#settings') return {view: 'settings'};
+  if (location.hash === '#launch') return {view: 'launch'};
+  if (location.hash === '#activity') return {view: 'activity'};
   const paneMatch = location.hash.match(/^#pane=(.+)$/);
   if (paneMatch) return {view: 'terminal', paneId: decodeURIComponent(paneMatch[1])};
   const notifyMatch = location.hash.match(/^#notify=(.+)$/);
@@ -1217,8 +1355,13 @@ function parseNotificationTarget(value) {
     const parsed = JSON.parse(decodeURIComponent(value));
     const paneId = String(parsed && parsed.pane_id || '').trim();
     const host = String(parsed && parsed.host || '').trim();
+    const action = ['approve', 'deny'].includes(parsed && parsed.action) ? parsed.action : '';
+    const index = Number.isInteger(parsed && parsed.index) ? parsed.index : null;
+    const total = Number.isInteger(parsed && parsed.total) ? parsed.total : null;
+    const notificationId = String(parsed && parsed.notification_id || '').trim().slice(0, 120);
     if (!paneId) return null;
-    return {pane_id: paneId, host};
+    if (action && (index === null || total === null || index < 0 || index >= total || total < 2 || total > 20)) return null;
+    return {pane_id: paneId, host, action, index, total, notification_id: notificationId};
   } catch (_err) {
     return null;
   }
@@ -1229,6 +1372,7 @@ function openNotificationTarget(target) {
   if (agent) {
     pendingNotificationTarget = null;
     replaceView({view: 'terminal', paneId: agent.pane_id});
+    if (target.action) executeNotificationAction(agent, target);
     return;
   }
   pendingNotificationTarget = target;
@@ -1255,9 +1399,48 @@ function resolvePendingNotificationTarget() {
   if (!pendingNotificationTarget) return;
   const agent = resolveNotificationTarget(pendingNotificationTarget);
   if (agent) {
+    const target = pendingNotificationTarget;
     pendingNotificationTarget = null;
     replaceView({view: 'terminal', paneId: agent.pane_id});
+    if (target.action) executeNotificationAction(agent, target);
   }
+}
+
+function handledNotificationActions() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HANDLED_NOTIFICATION_ACTIONS_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter(Boolean).slice(-50) : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
+function notificationActionKey(target) {
+  return `${target.notification_id || `${target.host}:${target.pane_id}`}:${target.action}`;
+}
+
+function rememberNotificationAction(target) {
+  const key = notificationActionKey(target);
+  const handled = handledNotificationActions().filter(value => value !== key);
+  handled.push(key);
+  localStorage.setItem(HANDLED_NOTIFICATION_ACTIONS_KEY, JSON.stringify(handled.slice(-50)));
+}
+
+async function executeNotificationAction(agent, target) {
+  const key = notificationActionKey(target);
+  if (handledNotificationActions().includes(key)) {
+    showToast('This notification action was already handled.');
+    return;
+  }
+  if (agentStatusGroup(agent) !== 'blocked') {
+    rememberNotificationAction(target);
+    showToast('The agent is no longer blocked.');
+    return;
+  }
+  rememberNotificationAction(target);
+  const options = approvalOptions(agent);
+  const choice = options[target.index] || (target.action === 'approve' ? 'approve once' : 'deny');
+  await respondForAgent(agent, target.index, target.total, choice, `Notification: ${target.action}`);
 }
 
 // Connection
@@ -1288,7 +1471,7 @@ function connectRelay(relay) {
     return;
   }
   disconnectRelay(relay.id);
-  const conn = { relay, ws: null, status: 'connecting', reconnectTimer: null, closed: false };
+  const conn = { relay, ws: null, status: 'connecting', reconnectTimer: null, closed: false, agentProfiles: [], host: '' };
   connections.set(relay.id, conn);
   updateStatusDot();
   renderRelayList();
@@ -1306,6 +1489,7 @@ function connectRelay(relay) {
   };
   ws.onclose = () => {
     conn.status = 'disconnected';
+    rejectPendingRequestsForRelay(relay.id, 'Relay disconnected');
     removeAgentsForRelay(relay.id);
     updateStatusDot();
     renderRelayList();
@@ -1317,6 +1501,7 @@ function connectRelay(relay) {
   };
   ws.onerror = () => {
     conn.status = 'disconnected';
+    rejectPendingRequestsForRelay(relay.id, 'Relay connection failed');
     updateStatusDot();
     renderRelayList();
   };
@@ -1333,6 +1518,7 @@ function disconnectRelay(id) {
   conn.closed = true;
   if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
   if (conn.ws) conn.ws.close();
+  rejectPendingRequestsForRelay(id, 'Relay disconnected');
   connections.delete(id);
 }
 
@@ -1364,10 +1550,13 @@ function handleMessage(relayId, msg) {
     const conn = connections.get(relayId);
     if (conn) {
       conn.vapidPublicKey = msg.vapid_public_key || '';
+      conn.host = msg.host || '';
+      conn.agentProfiles = Array.isArray(msg.agent_profiles) ? msg.agent_profiles.filter(profile => profile && profile.id) : [];
       if (pushOptedIn()) registerPushSubscription(relayId);
       else refreshPushSubscriptionState(relayId);
       renderNotificationSetting();
       renderRelayList();
+      if (currentView === 'launch') renderLaunchOptions();
     }
   }
   else if (msg.type === 'push_subscribed') {
@@ -1382,6 +1571,15 @@ function handleMessage(relayId, msg) {
   }
   else if (msg.type === 'upload_result') {
     handleUploadResult(relayId, msg);
+  }
+  else if (msg.type === 'command_result') {
+    handleCommandResult(relayId, msg);
+  }
+  else if (msg.type === 'activity_history') {
+    mergeActivityHistory(relayId, msg.activities || []);
+  }
+  else if (msg.type === 'activity' && msg.activity) {
+    upsertActivity(relayId, msg.activity);
   }
   else if (msg.type === 'agents') {
     const nextAgents = mergeAgentList(relayId, (msg.agents || []).map(a => normalizeAgent(relayId, a)));
@@ -1474,7 +1672,7 @@ function removeAgentsForRelay(relayId) {
 function agentsSignature(list) {
   return JSON.stringify(list.map(a => [
     a.relay_id, a.pane_id, a.raw_pane_id, a.tab_id, a.tab_label, a.tab_number,
-    a.agent, a.status, a.project, a.cwd, a.host, a.prompt, a.command, a.options
+    a.agent, a.name, a.status, a.project, a.cwd, a.host, a.prompt, a.command, a.options
   ]));
 }
 
@@ -1498,8 +1696,43 @@ function updateTerminalContent(content, format) {
 }
 
 function terminalDisplayContent(content) {
-  if (codexStatusLineVisible()) return content;
-  return String(content ?? '').split('\n').filter(line => !isAgentStatusLine(line)).join('\n');
+  const reflowed = reflowTerminalLines(content);
+  if (codexStatusLineVisible()) return reflowed;
+  return reflowed.split('\n').filter(line => !isAgentStatusLine(line)).join('\n');
+}
+
+function trimAnsiLineEnd(line) {
+  const match = String(line ?? '').match(/((?:\x1b\[[0-9;?]*[ -/]*[@-~])*)\r?$/);
+  const end = match ? match.index : String(line ?? '').length;
+  const suffix = match ? match[1] : '';
+  return String(line ?? '').slice(0, end).replace(/[ \t]+$/, '') + suffix;
+}
+
+function reflowTerminalLines(content) {
+  const out = [];
+  const structural = /^(?:[-*+] |\d+[.)] |[•›⚠✔✖└├┌│─━═]|```)/;
+  for (const line of String(content ?? '').split('\n')) {
+    const clean = stripAnsi(line);
+    const trimmed = clean.trim();
+    const indent = (clean.match(/^ */) || [''])[0].length;
+    const previous = out.length ? stripAnsi(out[out.length - 1]) : '';
+    const previousTrimmed = previous.trim();
+    const previousIndent = (previous.match(/^ */) || [''])[0].length;
+    const isContinuation = Boolean(
+      trimmed &&
+      previousTrimmed &&
+      indent === 2 &&
+      previousIndent <= 2 &&
+      !structural.test(trimmed)
+    );
+    if (!isContinuation) {
+      out.push(line);
+      continue;
+    }
+    const continuation = line.replace(/^((?:\x1b\[[0-9;?]*[ -/]*[@-~])*) {2}/, '$1');
+    out[out.length - 1] = `${trimAnsiLineEnd(out[out.length - 1])} ${continuation}`;
+  }
+  return out.join('\n');
 }
 
 function isAgentStatusLine(line) {
@@ -1548,6 +1781,32 @@ function escapeHtml(text) {
   }[ch]));
 }
 
+function ansi256Color(index) {
+  const value = Number(index);
+  if (!Number.isInteger(value) || value < 0 || value > 255) return '';
+  if (value < 8) return ANSI_COLORS[30 + value];
+  if (value < 16) return ANSI_COLORS[90 + value - 8];
+  if (value < 232) {
+    const offset = value - 16;
+    const levels = [0, 95, 135, 175, 215, 255];
+    const red = levels[Math.floor(offset / 36)];
+    const green = levels[Math.floor((offset % 36) / 6)];
+    const blue = levels[offset % 6];
+    return `rgb(${red},${green},${blue})`;
+  }
+  const gray = 8 + (value - 232) * 10;
+  return `rgb(${gray},${gray},${gray})`;
+}
+
+function ansiStyleName(name) {
+  return ({
+    fontWeight: 'font-weight',
+    fontStyle: 'font-style',
+    textDecoration: 'text-decoration',
+    backgroundColor: 'background-color',
+  })[name] || name;
+}
+
 function ansiToHtml(text) {
   let html = '', open = false, styles = {};
   const parts = text.split(/\x1b\[([0-9;]*)m/g);
@@ -1568,21 +1827,34 @@ function ansiToHtml(text) {
       else if (code === 2) styles.opacity = '0.7';
       else if (code === 3) styles.fontStyle = 'italic';
       else if (code === 4) styles.textDecoration = 'underline';
-      else if (code === 22) delete styles.fontWeight;
+      else if (code === 22) {
+        delete styles.fontWeight;
+        delete styles.opacity;
+      }
       else if (code === 23) delete styles.fontStyle;
       else if (code === 24) delete styles.textDecoration;
       else if (code === 39) delete styles.color;
       else if (code === 49) delete styles.backgroundColor;
-      else if ((code === 38 || code === 48) && codes[j + 1] === 2 && codes.length > j + 4) {
-        const color = `rgb(${codes[j + 2]},${codes[j + 3]},${codes[j + 4]})`;
-        if (code === 38) styles.color = color;
-        else styles.backgroundColor = color;
-        j += 4;
+      else if (code === 38 || code === 48) {
+        let color = '';
+        let consumed = 0;
+        if (codes[j + 1] === 2 && codes.length > j + 4) {
+          color = `rgb(${codes[j + 2]},${codes[j + 3]},${codes[j + 4]})`;
+          consumed = 4;
+        } else if (codes[j + 1] === 5 && codes.length > j + 2) {
+          color = ansi256Color(codes[j + 2]);
+          consumed = 2;
+        }
+        if (color) {
+          if (code === 38) styles.color = color;
+          else styles.backgroundColor = color;
+          j += consumed;
+        }
       }
       else if (ANSI_COLORS[code]) styles.color = ANSI_COLORS[code];
       else if (ANSI_COLORS[code - 10]) styles.backgroundColor = ANSI_COLORS[code - 10];
     }
-    const style = Object.entries(styles).map(([k,v]) => `${k}:${v}`).join(';');
+    const style = Object.entries(styles).map(([k,v]) => `${ansiStyleName(k)}:${v}`).join(';');
     if (style) {
       html += `<span style="${style}">`;
       open = true;
@@ -1592,8 +1864,70 @@ function ansiToHtml(text) {
   return html;
 }
 
+function restoreAgentActivityColors(text) {
+  // Herdr preserves Codex's ANSI-256 tool colors, but the read API currently
+  // reports the Explored activity heading as bold-only. Restore its semantic
+  // blue so the relay view matches the local Codex terminal.
+  return String(text ?? '').replace(
+    /\x1b\[1mExplored\x1b\[0m/g,
+    '\x1b[1;38;5;4mExplored\x1b[0m'
+  );
+}
+
+function ansiLineBackground(line) {
+  let backgroundColor = '';
+  const parts = String(line ?? '').split(/\x1b\[([0-9;]*)m/g);
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      if (parts[i].replaceAll('\r', '').length) return backgroundColor;
+      continue;
+    }
+    const codes = parts[i] ? parts[i].split(';').map(Number) : [0];
+    if (codes.includes(0)) backgroundColor = '';
+    for (let j = 0; j < codes.length; j++) {
+      const code = codes[j];
+      if (code === 49) backgroundColor = '';
+      else if (code === 48) {
+        if (codes[j + 1] === 2 && codes.length > j + 4) {
+          backgroundColor = `rgb(${codes[j + 2]},${codes[j + 3]},${codes[j + 4]})`;
+          j += 4;
+        } else if (codes[j + 1] === 5 && codes.length > j + 2) {
+          backgroundColor = ansi256Color(codes[j + 2]);
+          j += 2;
+        }
+      }
+      else if (ANSI_COLORS[code - 10]) backgroundColor = ANSI_COLORS[code - 10];
+    }
+  }
+  return backgroundColor;
+}
+
+function ansiLineBackgrounds(lines) {
+  const backgrounds = lines.map(ansiLineBackground);
+  for (let start = 1; start < lines.length - 1; start++) {
+    if (backgrounds[start] || stripAnsi(lines[start]).trim()) continue;
+    let end = start;
+    while (end + 1 < lines.length && !backgrounds[end + 1] && !stripAnsi(lines[end + 1]).trim()) end++;
+    const previous = backgrounds[start - 1];
+    const next = backgrounds[end + 1];
+    if (previous && previous === next) backgrounds.fill(previous, start, end + 1);
+    start = end;
+  }
+  return backgrounds;
+}
+
 function terminalHtml(text) {
-  return ansiToHtml(text).replaceAll(TERMINAL_SEPARATOR_TOKEN, '<span class="term-separator" aria-hidden="true"></span>');
+  const lines = restoreAgentActivityColors(text).split('\n');
+  const backgrounds = ansiLineBackgrounds(lines);
+  return lines.map((line, index) => {
+    if (line === TERMINAL_SEPARATOR_TOKEN) {
+      return '<span class="term-separator" aria-hidden="true"></span>';
+    }
+    const backgroundColor = backgrounds[index];
+    const backgroundClass = backgroundColor ? ' ansi-line-background' : '';
+    const backgroundStyle = backgroundColor ? ` style="background-color:${backgroundColor}"` : '';
+    return `<span class="ansi-line${backgroundClass}"${backgroundStyle}>${ansiToHtml(trimAnsiLineEnd(line))}</span>`;
+  }).join('');
 }
 
 function hostLabel(agent) {
@@ -1606,16 +1940,40 @@ function tabLabel(agent) {
   return agent.tab_number ? `tab ${agent.tab_number}` : '';
 }
 
+function normalizedLabel(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isAgentTypeLabel(agent, label) {
+  const normalized = normalizedLabel(label);
+  if (!normalized) return false;
+  const values = new Set(['codex', 'claude', 'claude code', 'opencode']);
+  values.add(normalizedLabel(agent && agent.agent));
+  const conn = agent && connections.get(agent.relay_id);
+  for (const profile of (conn && conn.agentProfiles) || []) {
+    values.add(normalizedLabel(profile.id));
+    values.add(normalizedLabel(profile.label));
+  }
+  return values.has(normalized);
+}
+
+function agentContextLabel(agent) {
+  const name = String(agent && agent.name || '').trim();
+  if (name && !isAgentTypeLabel(agent, name)) return name;
+  const tab = tabLabel(agent);
+  return tab && !isAgentTypeLabel(agent, tab) ? tab : '';
+}
+
 function displayName(agent) {
   const name = agent.project || agent.agent || 'agent';
-  const tab = tabLabel(agent);
-  return tab ? `${name} · ${tab}` : name;
+  const context = agentContextLabel(agent);
+  return context ? `${name} · ${context}` : name;
 }
 
 function sortedAgents(list) {
   return [...list].sort((a, b) =>
     hostLabel(a).localeCompare(hostLabel(b)) ||
-    tabLabel(a).localeCompare(tabLabel(b)) ||
+    agentContextLabel(a).localeCompare(agentContextLabel(b)) ||
     (a.project || a.agent || '').localeCompare(b.project || b.agent || '') ||
     (a.agent || '').localeCompare(b.agent || '')
   );
@@ -1672,15 +2030,25 @@ function notifyBlockedAgent(agent) {
   if (pushDeliveryActiveForRelay(agent.relay_id)) return;
   const title = `${displayName(agent)} blocked`;
   const body = approvalPromptPreview(agent) || `${agent.agent || 'Agent'} needs approval`;
+  const total = Math.max(2, approvalOptions(agent).length);
+  const target = {host: agent.host || hostLabel(agent), pane_id: agent.raw_pane_id, notification_id: agent.event_id || notificationTag(agent)};
   showHerdrNotification(title, {
     body,
     tag: notificationTag(agent),
     renotify: true,
     icon: HERDR_NOTIFICATION_ICON,
     badge: HERDR_NOTIFICATION_BADGE,
+    actions: [
+      {action: 'approve', title: 'Approve once'},
+      {action: 'deny', title: 'Deny'},
+    ],
     data: {
       url: viewUrl({view: 'terminal', paneId: agent.pane_id}),
       paneId: agent.pane_id,
+      action_urls: {
+        approve: viewUrl({view: 'notification', target: {...target, action: 'approve', index: 0, total}}),
+        deny: viewUrl({view: 'notification', target: {...target, action: 'deny', index: total - 1, total}}),
+      },
     },
   });
 }
@@ -1737,7 +2105,7 @@ function markPaneResponding(paneId) {
     if (!respondingPaneIds.delete(paneId)) return;
     render();
     syncActiveTerminal();
-  }, 5000);
+  }, 10000);
 }
 
 function approvalOptions(agent) {
@@ -1855,6 +2223,8 @@ function showTerminalView(paneId) {
   activePaneSnapshot = a ? paneSnapshotFromAgent(a) : paneSnapshotFromId(paneId);
   syncTerminalChrome(a || null);
   document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('launchView').style.display = 'none';
+  document.getElementById('activityView').style.display = 'none';
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('terminalView').classList.add('active');
   updateComposerState();
@@ -1912,9 +2282,9 @@ function terminalSecondaryLabel(agent) {
   if (!agent) return '';
   const parts = [];
   const primary = terminalPrimaryLabel(agent);
-  const tab = tabLabel(agent);
-  if (tab) parts.push(tab);
-  if (agent.agent && agent.agent !== primary && agent.agent !== tab) parts.push(agent.agent);
+  const context = agentContextLabel(agent);
+  if (context) parts.push(context);
+  if (agent.agent && agent.agent !== primary && agent.agent !== context) parts.push(agent.agent);
   const host = hostLabel(agent);
   if (host) {
     if (parts.length) parts[parts.length - 1] = `${parts[parts.length - 1]} @${host}`;
@@ -2069,6 +2439,7 @@ async function uploadImageFile(file) {
     conn.ws.send(JSON.stringify({
       type: 'upload_image',
       request_id: requestId,
+      client_id: pushClientId(),
       pane_id: target.raw_pane_id,
       filename: file.name || 'image',
       mime: file.type || 'application/octet-stream',
@@ -2153,12 +2524,272 @@ function handleComposerPaste(event) {
   uploadSelectedImages(files);
 }
 
-function sendToAgent(agent, payload) {
-  if (!agent) return false;
-  const conn = connections.get(agent.relay_id);
-  if (!conn || !conn.ws || conn.ws.readyState !== 1) return false;
-  conn.ws.send(JSON.stringify({...payload, pane_id: agent.raw_pane_id}));
-  return true;
+function commandRequestId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const bytes = randomBytes(16);
+  return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+function sendCommand(relayId, payload, timeoutMs = COMMAND_TIMEOUT_MS) {
+  const conn = connections.get(relayId);
+  if (!conn || !conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error('Relay is not connected'));
+  }
+  const requestId = commandRequestId();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingRequests.delete(requestId);
+      reject(new Error('Relay did not confirm the command in time'));
+    }, timeoutMs);
+    pendingRequests.set(requestId, {
+      relayId,
+      action: payload.type,
+      resolve,
+      reject,
+      timer,
+    });
+    try {
+      conn.ws.send(JSON.stringify({...payload, request_id: requestId, client_id: pushClientId()}));
+    } catch (_err) {
+      clearTimeout(timer);
+      pendingRequests.delete(requestId);
+      reject(new Error('Could not send command to relay'));
+    }
+  });
+}
+
+function sendCommandToTarget(target, payload, timeoutMs = COMMAND_TIMEOUT_MS) {
+  if (!target) return Promise.reject(new Error('Agent is unavailable'));
+  return sendCommand(target.relay_id, {...payload, pane_id: target.raw_pane_id}, timeoutMs);
+}
+
+function handleCommandResult(relayId, msg) {
+  const pending = pendingRequests.get(msg.request_id);
+  if (!pending || pending.relayId !== relayId) return;
+  if (msg.phase === 'accepted') {
+    showToast('Command accepted; waiting for agent state…');
+    return;
+  }
+  clearTimeout(pending.timer);
+  pendingRequests.delete(msg.request_id);
+  if (msg.ok) pending.resolve(msg);
+  else pending.reject(new Error(msg.error || 'Command failed'));
+}
+
+function rejectPendingRequestsForRelay(relayId, message) {
+  for (const [requestId, pending] of pendingRequests) {
+    if (pending.relayId !== relayId) continue;
+    clearTimeout(pending.timer);
+    pendingRequests.delete(requestId);
+    pending.reject(new Error(message));
+  }
+}
+
+function showToast(message, error = false) {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  if (toastTimer) clearTimeout(toastTimer);
+  toast.textContent = message;
+  toast.classList.toggle('error', error);
+  toast.classList.add('active');
+  toastTimer = setTimeout(() => toast.classList.remove('active'), 4000);
+}
+
+function normalizeActivity(relayId, activity) {
+  const relay = relayConfig(relayId);
+  return {
+    ...activity,
+    relay_id: relayId,
+    relay_label: relay ? relay.label : activity.host || 'relay',
+    activity_key: `${relayId}:${activity.id || `${activity.timestamp}:${activity.kind}:${activity.request_id || ''}`}`,
+  };
+}
+
+function mergeActivityHistory(relayId, nextActivities) {
+  const retained = activities.filter(activity => activity.relay_id !== relayId);
+  const incoming = nextActivities.filter(activity => activity && activity.timestamp).map(activity => normalizeActivity(relayId, activity));
+  activities = retained.concat(incoming).sort((a, b) => Number(b.timestamp) - Number(a.timestamp)).slice(0, 500);
+  if (currentView === 'activity') renderActivity();
+}
+
+function upsertActivity(relayId, activity) {
+  const next = normalizeActivity(relayId, activity);
+  activities = [next, ...activities.filter(item => item.activity_key !== next.activity_key)]
+    .sort((a, b) => Number(b.timestamp) - Number(a.timestamp))
+    .slice(0, 500);
+  if (currentView === 'activity') renderActivity();
+}
+
+function requestActivityHistory() {
+  for (const conn of connections.values()) {
+    if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+      conn.ws.send(JSON.stringify({type: 'get_activity', limit: 500}));
+    }
+  }
+}
+
+function activityMatchesSearch(activity, query) {
+  if (!query) return true;
+  const details = activity.details && typeof activity.details === 'object' ? Object.values(activity.details) : [];
+  return [activity.summary, activity.kind, activity.status, activity.relay_label, activity.project, activity.agent, ...details]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .includes(query);
+}
+
+function activityColor(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'failed') return 'var(--red)';
+  if (value === 'attention' || value === 'unconfirmed' || value === 'completed_with_warning') return 'var(--yellow)';
+  if (['confirmed', 'completed', 'working', 'idle', 'ready', 'done'].includes(value)) return 'var(--green)';
+  return 'var(--muted)';
+}
+
+function renderActivity() {
+  const list = document.getElementById('activityList');
+  if (!list) return;
+  if (!activities.length) {
+    list.innerHTML = '<div class="empty">No activity yet.</div>';
+    return;
+  }
+  const query = String(document.getElementById('activitySearch')?.value || '').trim().toLowerCase();
+  const visible = activities.filter(activity => activityMatchesSearch(activity, query));
+  if (!visible.length) {
+    list.innerHTML = '<div class="empty">No matching activity.</div>';
+    return;
+  }
+  list.innerHTML = visible.map(activity => {
+    const when = new Date(Number(activity.timestamp)).toLocaleString([], {dateStyle: 'short', timeStyle: 'short'});
+    const meta = [activity.relay_label, activity.project, activity.agent, activity.status].filter(Boolean).join(' · ');
+    return `<article class="activity-item">
+      <div class="activity-title"><span class="activity-status" style="background:${activityColor(activity.status)}"></span><strong>${escapeHtml(activity.summary || activity.kind || 'Activity')}</strong><time class="activity-time">${escapeHtml(when)}</time></div>
+      <div class="activity-meta">${escapeHtml(meta)}</div>
+    </article>`;
+  }).join('');
+}
+
+function renderLaunchOptions() {
+  const relaySelect = document.getElementById('launchRelay');
+  const profileSelect = document.getElementById('launchProfile');
+  const pathList = document.getElementById('projectPaths');
+  if (!relaySelect || !profileSelect || !pathList) return;
+  const previousRelay = relaySelect.value;
+  const connected = relayConfigs.filter(relay => {
+    const conn = connections.get(relay.id);
+    return conn && conn.status === 'connected';
+  });
+  relaySelect.innerHTML = connected.length
+    ? connected.map(relay => `<option value="${escapeHtml(relay.id)}">${escapeHtml(relay.label)}</option>`).join('')
+    : '<option value="">No connected relays</option>';
+  if (connected.some(relay => relay.id === previousRelay)) relaySelect.value = previousRelay;
+  const conn = connections.get(relaySelect.value);
+  const profiles = conn && Array.isArray(conn.agentProfiles) ? conn.agentProfiles : [];
+  profileSelect.innerHTML = profiles.length
+    ? profiles.map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.label || profile.id)}</option>`).join('')
+    : '<option value="">No agent profiles available</option>';
+  const paths = [...new Set(agents.filter(agent => agent.relay_id === relaySelect.value).map(agent => agent.cwd).filter(Boolean))];
+  pathList.innerHTML = paths.sort().map(path => `<option value="${escapeHtml(path)}"></option>`).join('');
+  const cwdInput = document.getElementById('launchCwd');
+  if (cwdInput && !cwdInput.value && paths.length) cwdInput.value = paths[0];
+  const nameInput = document.getElementById('launchName');
+  if (nameInput && !nameInput.value) {
+    const profile = profileSelect.value || 'agent';
+    const stamp = new Date().toTimeString().slice(0, 5).replace(':', '');
+    nameInput.value = `mobile-${profile}-${stamp}`;
+  }
+  document.getElementById('launchSubmit').disabled = !conn || !profiles.length;
+}
+
+async function startAgent(event) {
+  event.preventDefault();
+  const relayId = document.getElementById('launchRelay').value;
+  const submit = document.getElementById('launchSubmit');
+  const status = document.getElementById('launchStatus');
+  submit.disabled = true;
+  status.classList.remove('error');
+  status.textContent = 'Starting agent…';
+  try {
+    const result = await sendCommand(relayId, {
+      type: 'agent_start',
+      profile_id: document.getElementById('launchProfile').value,
+      name: document.getElementById('launchName').value.trim(),
+      cwd: document.getElementById('launchCwd').value.trim(),
+      prompt: document.getElementById('launchPrompt').value,
+    }, 25000);
+    const warning = result.data && result.data.warning;
+    status.textContent = warning || 'Agent started.';
+    status.classList.toggle('error', Boolean(warning));
+    document.getElementById('launchPrompt').value = '';
+    document.getElementById('launchName').value = '';
+    showToast(warning || 'Agent started.', Boolean(warning));
+    setTimeout(() => replaceView({view: 'agents'}), 500);
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+    showToast(error.message, true);
+  } finally {
+    renderLaunchOptions();
+  }
+}
+
+function openManageDialog() {
+  const agent = activeAgent();
+  if (!agent) {
+    showToast('Agent is unavailable.', true);
+    return;
+  }
+  document.getElementById('manageDescription').textContent = `${displayName(agent)} @${hostLabel(agent)}`;
+  document.getElementById('manageName').value = agent.name || agent.tab_label || agent.project || '';
+  document.getElementById('manageDialog').classList.add('active');
+  setTimeout(() => document.getElementById('manageName').focus(), 0);
+}
+
+function closeManageDialog() {
+  document.getElementById('manageDialog').classList.remove('active');
+}
+
+async function renameActiveAgent() {
+  const target = activePaneTarget();
+  const name = document.getElementById('manageName').value.trim();
+  if (!target || !name) {
+    showToast('Enter a name for the agent.', true);
+    return;
+  }
+  try {
+    await sendCommandToTarget(target, {type: 'agent_rename', name});
+    closeManageDialog();
+    showToast(`Agent renamed to ${name}.`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function stopActiveAgent() {
+  const target = activePaneTarget();
+  if (!target || !window.confirm('Stop and close this agent pane?')) return;
+  try {
+    await sendCommandToTarget(target, {type: 'agent_stop'});
+    closeManageDialog();
+    showToast('Agent stopped.');
+    replaceView({view: 'agents'});
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function clearActiveAgent() {
+  const target = activePaneTarget();
+  if (!target || !window.confirm('Clear this conversation and start a fresh agent in the same working directory?')) return;
+  try {
+    const result = await sendCommandToTarget(target, {type: 'agent_clear'}, 25000);
+    const warning = result.data && result.data.warning;
+    closeManageDialog();
+    showToast(warning || 'Agent cleared.', Boolean(warning));
+    replaceView({view: 'agents'});
+  } catch (error) {
+    showToast(error.message, true);
+  }
 }
 
 function sendToActive(payload) {
@@ -2178,22 +2809,22 @@ function refreshPane() { sendToActive({type:'read_pane',lines:TERMINAL_HISTORY_L
 function composerPromptText(input) {
   return String(input && input.value || '').replace(/[\r\n]+$/g, '');
 }
-function sendText() {
+async function sendText() {
   const i=document.getElementById('termInput');
   const text=composerPromptText(i);
   const target=activePaneTarget();
-  const agent=activeAgent();
   if(!text||!target)return;
-  if (!sendToTarget(target,{type:'send_text',text})) return;
-  sendToTarget(target,{type:'send_keys',keys:['Enter']});
-  if (usesCodexSubmitWorkaround(agent)) {
-    setTimeout(() => sendToTarget(target,{type:'send_keys',keys:['Tab']}), 160);
+  i.value=''; handleComposerInput();
+  try {
+    await sendCommandToTarget(target,{type:'submit_prompt',text});
+    lastInsertedBackspaces += text.length + 1;
+    showToast('Prompt sent.');
+  } catch (error) {
+    if (!composerPromptText(i)) i.value = text;
+    handleComposerInput();
+    showToast(error.message, true);
   }
-  lastInsertedBackspaces += text.length + 1;
-  i.value=''; handleComposerInput(); setTimeout(refreshPane,500);
-}
-function usesCodexSubmitWorkaround(agent){
-  return /\bcodex\b/i.test(String(agent&&agent.agent||''));
+  setTimeout(refreshPane,500);
 }
 function handleComposerInput(){
   resizeComposer();
@@ -2214,25 +2845,29 @@ function updateComposerState(){
   if(send) send.disabled=!hasText;
   if(field) field.classList.toggle('has-text', hasText);
 }
-function sendKey(k){if(!activePane)return;sendToActive({type:'send_keys',keys:[k]});setTimeout(refreshPane,300);}
-function sendKeys(k){if(!activePane)return;sendToActive({type:'send_keys',keys:k});setTimeout(refreshPane,300);}
+function sendKey(k){
+  const target=activePaneTarget();
+  if(!target)return;
+  sendCommandToTarget(target,{type:'send_keys',keys:[k]}).catch(error=>showToast(error.message,true));
+  setTimeout(refreshPane,300);
+}
+function sendKeys(k, activityLabel=''){
+  const target=activePaneTarget();
+  if(!target)return;
+  sendCommandToTarget(target,{type:'send_keys',keys:k,activity_label:activityLabel}).catch(error=>showToast(error.message,true));
+  setTimeout(refreshPane,300);
+}
 function submitPrompt(){
   const i=document.getElementById('termInput');
   if(i&&composerPromptText(i)){sendText();return;}
   updateComposerState();
 }
-function handleComposerBeforeInput(event){
-  if(!['insertLineBreak','insertParagraph'].includes(event.inputType)||event.isComposing)return;
-  event.preventDefault();
-  submitPrompt();
-}
 function handleComposerKeyDown(event){
-  if(event.key!=='Enter'||event.shiftKey||event.altKey||event.ctrlKey||event.metaKey||event.isComposing)return;
+  if(event.key!=='Enter'||(!event.ctrlKey&&!event.metaKey)||event.isComposing)return;
   event.preventDefault();
   submitPrompt();
 }
-function cancelPrompt(){lastInsertedBackspaces=0;sendKey('Escape');}
-function interruptPrompt(){lastInsertedBackspaces=0;sendKeys(['Ctrl+c']);}
+function cancelPrompt(){lastInsertedBackspaces=0;sendKeys(['Escape'],'Cancelled prompt');}
 function clearPromptText(){
   const i=document.getElementById('termInput');
   lastInsertedBackspaces=0;
@@ -2243,31 +2878,45 @@ function toggleArrows(event){
   document.getElementById('arrowPopup').classList.toggle('show');
 }
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
+async function respondForAgent(agent,index,total,choice='',source='App'){
+  if(!agent||typeof index!=='number'||index<0)return false;
+  const label=choice||approvalOptions(agent)[index]||`option ${index+1}`;
+  markPaneResponding(agent.pane_id);
+  try{
+    const result=await sendCommand(agent.relay_id,{type:'respond',pane_id:agent.raw_pane_id,index,total,choice:label,source},12000);
+    if(result.phase==='unconfirmed') showToast('Approval was accepted but the agent still appears blocked.');
+    else showToast(`Confirmed: ${label}`);
+    return true;
+  }catch(error){
+    respondingPaneIds.delete(agent.pane_id);
+    render();
+    syncActiveTerminal();
+    showToast(error.message,true);
+    return false;
+  }finally{
+    setTimeout(refreshPane,500);
+  }
+}
 function respond(index, total){
-  if(!activePane)return;
-  if(typeof index!=='number'||index<0)return;
-  if(!sendToActive({type:'respond',index,total}))return;
-  markPaneResponding(activePane);
+  const agent=activeAgent();
+  if(!agent)return;
   document.getElementById('quickActions').innerHTML='';
   document.getElementById('terminalView').classList.remove('has-quick-actions');
   updateBottomChromeHeight();
-  setTimeout(refreshPane,500);
+  respondForAgent(agent,index,total,approvalOptions(agent)[index]);
 }
 function respondForPane(paneId,index,total){
-  if(typeof index!=='number'||index<0)return;
   const agent=agents.find(x=>x.pane_id===paneId);
-  if(!sendToAgent(agent,{type:'respond',index,total}))return;
-  markPaneResponding(paneId);
+  if(!agent)return;
   if(activePane===paneId){
     document.getElementById('quickActions').innerHTML='';
     document.getElementById('terminalView').classList.remove('has-quick-actions');
     updateBottomChromeHeight();
-    setTimeout(refreshPane,500);
   }
+  respondForAgent(agent,index,total,approvalOptions(agent)[index]);
 }
 document.addEventListener('click', hideArrows);
 document.getElementById('termInput').addEventListener('paste', handleComposerPaste);
-document.getElementById('termInput').addEventListener('beforeinput', handleComposerBeforeInput);
 document.getElementById('termInput').addEventListener('keydown', handleComposerKeyDown);
 document.getElementById('termContent').addEventListener('scroll', handleTerminalScroll);
 window.addEventListener('resize', updateBottomChromeHeight);

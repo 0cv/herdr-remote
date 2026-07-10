@@ -11,58 +11,8 @@ LOG_FILE=""
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
-generate_token() {
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 16
-    else
-        uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-'
-    fi
-}
-
-ensure_env() {
-    if [ ! -f "$ENV_FILE" ]; then
-        umask 077
-        cat > "$ENV_FILE" <<EOF
-HERDR_RELAY_HOST=127.0.0.1
-HERDR_RELAY_PORT=8375
-HERDR_RELAY_PLUGIN_PORT=8376
-HERDR_RELAY_POLL_INTERVAL=2
-HERDR_ALLOWED_ORIGINS=
-HERDR_RELAY_TOKEN=$(generate_token)
-EOF
-        echo "Created $ENV_FILE"
-    else
-        chmod 600 "$ENV_FILE"
-        if ! grep -q '^HERDR_RELAY_HOST=' "$ENV_FILE"; then
-            printf '\nHERDR_RELAY_HOST=127.0.0.1\n' >> "$ENV_FILE"
-        fi
-        if ! grep -q '^HERDR_RELAY_PORT=' "$ENV_FILE"; then
-            printf '\nHERDR_RELAY_PORT=8375\n' >> "$ENV_FILE"
-        fi
-        if ! grep -q '^HERDR_RELAY_PLUGIN_PORT=' "$ENV_FILE"; then
-            printf '\nHERDR_RELAY_PLUGIN_PORT=8376\n' >> "$ENV_FILE"
-        fi
-        if ! grep -q '^HERDR_RELAY_POLL_INTERVAL=' "$ENV_FILE"; then
-            printf '\nHERDR_RELAY_POLL_INTERVAL=2\n' >> "$ENV_FILE"
-        fi
-        if ! grep -q '^HERDR_ALLOWED_ORIGINS=' "$ENV_FILE"; then
-            printf '\nHERDR_ALLOWED_ORIGINS=\n' >> "$ENV_FILE"
-        fi
-    fi
-
-    set -a
-    # shellcheck source=/dev/null
-    . "$ENV_FILE"
-    set +a
-
-    if [ -z "${HERDR_RELAY_TOKEN:-}" ]; then
-        printf '\nHERDR_RELAY_TOKEN=%s\n' "$(generate_token)" >> "$ENV_FILE"
-        set -a
-        # shellcheck source=/dev/null
-        . "$ENV_FILE"
-        set +a
-    fi
-}
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/common.sh"
 
 cleanup() {
     if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
@@ -78,7 +28,18 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 
-ensure_env
+require_supported_platform
+ensure_relay_env "$ENV_FILE"
+load_relay_env "$ENV_FILE"
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "✗ uv is required. Run make setup for installation guidance."
+    exit 1
+fi
+if ! command -v herdr >/dev/null 2>&1 && [ -z "${HERDR_BIN:-}" ]; then
+    echo "✗ herdr is required. Run make setup for installation guidance."
+    exit 1
+fi
 PORT="${HERDR_RELAY_PORT:-8375}"
 HOST="${HERDR_RELAY_HOST:-127.0.0.1}"
 TUNNEL_TARGET_HOST="$HOST"

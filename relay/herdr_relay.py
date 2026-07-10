@@ -4,7 +4,21 @@
 # dependencies = ["websockets>=14.0", "pywebpush>=2.0.0", "py-vapid>=1.9.2", "cryptography>=42.0.0"]
 # ///
 """Herdr Mobile Relay server — polls local herdr and broadcasts to clients."""
-import asyncio, base64, hmac, json, os, re, secrets, shutil, signal, socket, subprocess, threading, time, urllib.parse
+import asyncio
+import base64
+import hmac
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import socket
+import subprocess
+import threading
+import time
+import urllib.parse
+from collections import deque
 from pathlib import Path
 
 try:
@@ -42,15 +56,18 @@ ALLOWED_ORIGINS = {
     if origin.strip()
 }
 LOCAL_HOST = socket.gethostname().split(".")[0] or "local"
-PUSH_DIR = Path(os.environ.get("HERDR_RELAY_PUSH_DIR", Path(__file__).with_name("push")))
+PUSH_DIR = Path(__file__).with_name("push")
 PUSH_SUBSCRIPTIONS_FILE = PUSH_DIR / "subscriptions.json"
-VAPID_PRIVATE_KEY_FILE = Path(os.environ.get("HERDR_VAPID_PRIVATE_KEY", PUSH_DIR / "vapid_private.pem"))
-VAPID_SUBJECT = os.environ.get("HERDR_VAPID_SUBJECT", f"mailto:herdr-mobile-relay@{LOCAL_HOST}.local")
+VAPID_PRIVATE_KEY_FILE = PUSH_DIR / "vapid_private.pem"
+VAPID_SUBJECT = f"mailto:herdr-mobile-relay@{LOCAL_HOST}.local"
 VAPID_PUBLIC_KEY = None
 PUSH_LOCK = threading.RLock()
-UPLOAD_DIR = Path(os.environ.get("HERDR_UPLOAD_DIR", Path.home() / ".cache" / "herdr-mobile-relay" / "uploads"))
-UPLOAD_MAX_BYTES = int(os.environ.get("HERDR_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
-WS_MAX_SIZE = int(os.environ.get("HERDR_WS_MAX_SIZE", str(max(16 * 1024 * 1024, UPLOAD_MAX_BYTES * 2 + 1024 * 1024))))
+ACTIVITY_FILE = Path.home() / ".cache" / "herdr-mobile-relay" / "activity.jsonl"
+ACTIVITY_MAX_ITEMS = 500
+ACTIVITY_LOCK = threading.RLock()
+UPLOAD_DIR = Path.home() / ".cache" / "herdr-mobile-relay" / "uploads"
+UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+WS_MAX_SIZE = max(16 * 1024 * 1024, UPLOAD_MAX_BYTES * 2 + 1024 * 1024)
 IMAGE_MIME_EXTENSIONS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -58,6 +75,11 @@ IMAGE_MIME_EXTENSIONS = {
     "image/gif": ".gif",
     "image/heic": ".heic",
     "image/heif": ".heif",
+}
+AGENT_PROFILE_CANDIDATES = {
+    "codex": "Codex",
+    "claude": "Claude Code",
+    "opencode": "OpenCode",
 }
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
@@ -90,19 +112,31 @@ last_statuses = {}
 event_queue = asyncio.Queue()
 
 
-def run_herdr(*args):
+def run_herdr_result(*args):
     try:
         cmd = [HERDR, *args]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if r.returncode != 0:
-            return None
-        return r.stdout.strip()
-    except Exception:
-        return None
+            error = (r.stderr or r.stdout or f"herdr exited with status {r.returncode}").strip()
+            return False, "", error[:500]
+        return True, r.stdout.strip(), ""
+    except subprocess.TimeoutExpired:
+        return False, "", "herdr command timed out"
+    except Exception as exc:
+        return False, "", str(exc)[:500] or "herdr command failed"
+
+
+def run_herdr(*args):
+    ok, output, _error = run_herdr_result(*args)
+    return output if ok else None
 
 
 async def run_herdr_async(*args):
     return await asyncio.to_thread(run_herdr, *args)
+
+
+async def run_herdr_async_result(*args):
+    return await asyncio.to_thread(run_herdr_result, *args)
 
 
 def get_tabs():
@@ -136,11 +170,13 @@ def get_agents():
                 {
                     "pane_id": raw_pane_id,
                     "raw_pane_id": raw_pane_id,
+                    "terminal_id": p.get("terminal_id", ""),
                     "tab_id": tab_id,
                     "tab_label": tab.get("label", ""),
                     "tab_number": tab.get("number"),
                     "workspace_id": p.get("workspace_id", ""),
                     "agent": p.get("agent", ""),
+                    "name": p.get("name") or p.get("label") or "",
                     "status": p.get("agent_status", "unknown"),
                     "cwd": p.get("cwd", ""),
                     "project": os.path.basename(p.get("cwd", "")),
@@ -296,6 +332,120 @@ def ensure_private_dir(path):
         pass
 
 
+def compact_text(value, limit=240):
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def load_agent_profiles():
+    profiles = {}
+    for profile_id, label in AGENT_PROFILE_CANDIDATES.items():
+        executable = shutil.which(profile_id)
+        if not executable:
+            continue
+        profiles[profile_id] = {
+            "id": profile_id,
+            "label": label,
+            "argv": [executable],
+        }
+    return profiles
+
+
+def resolve_agent_cwd(value):
+    cwd = Path(os.path.expandvars(str(value or "").strip())).expanduser()
+    if not cwd.is_absolute() or not cwd.is_dir():
+        return None, "Working directory must be an existing absolute directory"
+    try:
+        cwd = cwd.resolve()
+    except OSError:
+        return None, "Working directory could not be resolved"
+    try:
+        home = Path.home().resolve()
+    except OSError:
+        return None, "Home directory could not be resolved"
+    if cwd.is_relative_to(home):
+        return cwd, ""
+    return None, "Working directory must be inside the current user's home directory"
+
+
+def load_activity(limit=ACTIVITY_MAX_ITEMS):
+    try:
+        limit = int(limit or ACTIVITY_MAX_ITEMS)
+    except (TypeError, ValueError):
+        limit = ACTIVITY_MAX_ITEMS
+    limit = max(1, min(limit, ACTIVITY_MAX_ITEMS))
+    with ACTIVITY_LOCK:
+        try:
+            with ACTIVITY_FILE.open(encoding="utf-8") as activity_file:
+                lines = deque(activity_file, maxlen=limit)
+        except OSError:
+            return []
+    entries = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def trim_activity_file():
+    try:
+        if ACTIVITY_FILE.stat().st_size < 2 * 1024 * 1024:
+            return
+    except OSError:
+        return
+    entries = load_activity(ACTIVITY_MAX_ITEMS)
+    tmp = ACTIVITY_FILE.with_suffix(".jsonl.tmp")
+    tmp.write_text("".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in entries))
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(ACTIVITY_FILE)
+
+
+def record_activity(kind, status, summary, pane_id="", agent="", project="", request_id="", details=None):
+    entry = {
+        "id": secrets.token_urlsafe(12),
+        "timestamp": int(time.time() * 1000),
+        "kind": compact_text(kind, 40),
+        "status": compact_text(status, 24),
+        "summary": compact_text(summary, 240),
+        "host": LOCAL_HOST,
+        "pane_id": compact_text(pane_id, 120),
+        "agent": compact_text(agent, 80),
+        "project": compact_text(project, 120),
+        "request_id": compact_text(request_id, 120),
+    }
+    if isinstance(details, dict):
+        entry["details"] = {
+            compact_text(key, 40): compact_text(value, 240)
+            for key, value in details.items()
+            if value is not None and compact_text(key, 40)
+        }
+    with ACTIVITY_LOCK:
+        try:
+            ensure_private_dir(ACTIVITY_FILE.parent)
+            with ACTIVITY_FILE.open("a", encoding="utf-8") as activity_file:
+                activity_file.write(json.dumps(entry, separators=(",", ":")) + "\n")
+            try:
+                os.chmod(ACTIVITY_FILE, 0o600)
+            except OSError:
+                pass
+            trim_activity_file()
+        except OSError as exc:
+            print(f"Activity history write failed: {exc}")
+    return entry
+
+
+async def publish_activity(*args, **kwargs):
+    entry = await asyncio.to_thread(record_activity, *args, **kwargs)
+    await broadcast({"type": "activity", "activity": entry})
+    return entry
+
+
 def ensure_vapid_public_key():
     global VAPID_PUBLIC_KEY
     if VAPID_PUBLIC_KEY:
@@ -425,15 +575,30 @@ def push_payload(blocked_msg):
     host = blocked_msg.get("host") or LOCAL_HOST
     pane_id = blocked_msg.get("pane_id", "")
     command = blocked_msg.get("command") or "Agent needs approval"
-    target = urllib.parse.quote(json.dumps({
+    options = blocked_msg.get("options") if isinstance(blocked_msg.get("options"), list) else TOOL_OPTIONS
+    total = max(2, len(options))
+    base_target = {
         "host": host,
         "pane_id": pane_id,
-    }, separators=(",", ":")))
+        "notification_id": blocked_msg.get("event_id", ""),
+    }
+
+    def action_url(action="", index=None):
+        target = dict(base_target)
+        if action:
+            target.update({"action": action, "index": index, "total": total})
+        encoded = urllib.parse.quote(json.dumps(target, separators=(",", ":")))
+        return f"./#notify={encoded}"
+
     return {
         "title": f"{project} blocked",
         "body": f"{command} · {host}",
         "tag": f"herdr-{host}-{pane_id}",
-        "url": f"./#notify={target}",
+        "url": action_url(),
+        "action_urls": {
+            "approve": action_url("approve", 0),
+            "deny": action_url("deny", total - 1),
+        },
     }
 
 
@@ -473,8 +638,49 @@ async def push_blocked(blocked_msg):
 
 
 async def publish_blocked(blocked_msg):
+    blocked_msg = dict(blocked_msg)
+    blocked_msg.setdefault("event_id", secrets.token_urlsafe(12))
+    await publish_activity(
+        "blocked",
+        "attention",
+        blocked_msg.get("command") or "Agent needs approval",
+        pane_id=blocked_msg.get("pane_id", ""),
+        agent=blocked_msg.get("agent", ""),
+        project=blocked_msg.get("project", ""),
+        details={"event_id": blocked_msg["event_id"]},
+    )
     await broadcast(blocked_msg)
     asyncio.create_task(push_blocked(blocked_msg))
+
+
+async def publish_agent_blocked(agent):
+    pane_id = agent.get("pane_id", "")
+    content = await asyncio.to_thread(read_pane, pane_id) or agent.get("prompt", "Agent is blocked")
+    await publish_blocked({
+        "type": "blocked",
+        "pane_id": pane_id,
+        "agent": agent.get("agent", ""),
+        "project": agent.get("project", ""),
+        "host": agent.get("host", LOCAL_HOST),
+        "tab_id": agent.get("tab_id", ""),
+        "tab_label": agent.get("tab_label", ""),
+        "tab_number": agent.get("tab_number"),
+        "workspace_id": agent.get("workspace_id", ""),
+        "prompt": content[:500],
+        "command": detect_command_context(content),
+        "options": detect_options(content) or TOOL_OPTIONS,
+    })
+
+
+async def publish_agent_status(agent, status):
+    await publish_activity(
+        "agent_status",
+        status or "unknown",
+        f"Agent is now {status or 'unknown'}",
+        pane_id=agent.get("pane_id", ""),
+        agent=agent.get("agent", ""),
+        project=agent.get("project", ""),
+    )
 
 
 def respond_keys(index, total=None):
@@ -516,22 +722,11 @@ async def poll_loop():
         if agents:
             for a in agents:
                 pid, status = a["pane_id"], a["status"]
-                if status == "blocked" and last_statuses.get(pid) != "blocked":
-                    content = await asyncio.to_thread(read_pane, pid)
-                    options = detect_options(content)
-                    command = detect_command_context(content)
-                    await publish_blocked({
-                        "type": "blocked", "pane_id": pid,
-                        "agent": a["agent"], "project": a["project"],
-                        "host": a.get("host", LOCAL_HOST),
-                        "tab_id": a.get("tab_id", ""),
-                        "tab_label": a.get("tab_label", ""),
-                        "tab_number": a.get("tab_number"),
-                        "workspace_id": a.get("workspace_id", ""),
-                        "prompt": content[:500],
-                        "command": command,
-                        "options": options or TOOL_OPTIONS
-                    })
+                previous_status = last_statuses.get(pid)
+                if status == "blocked" and previous_status != "blocked":
+                    await publish_agent_blocked(a)
+                elif previous_status == "blocked" and status != "blocked":
+                    await publish_agent_status(a, status)
                 last_statuses[pid] = status
         await asyncio.sleep(POLL_INTERVAL)
 
@@ -542,27 +737,15 @@ async def event_push():
         raw_pane_id = event.get("pane_id", "")
         status = event.get("status", "")
         host = event.get("host", LOCAL_HOST)
-        was_blocked = raw_pane_id and last_statuses.get(raw_pane_id) == "blocked"
+        previous_status = last_statuses.get(raw_pane_id) if raw_pane_id else None
+        was_blocked = previous_status == "blocked"
         if raw_pane_id and status:
             last_statuses[raw_pane_id] = status
 
         if status == "blocked" and raw_pane_id and not was_blocked:
-            content = await asyncio.to_thread(read_pane, raw_pane_id) or event.get("prompt", "Agent is blocked")
-            options = detect_options(content)
-            command = detect_command_context(content)
-            await publish_blocked({
-                "type": "blocked", "pane_id": raw_pane_id,
-                "agent": event.get("agent", ""),
-                "project": event.get("project", ""),
-                "host": host,
-                "tab_id": event.get("tab_id", ""),
-                "tab_label": event.get("tab_label", ""),
-                "tab_number": event.get("tab_number"),
-                "workspace_id": event.get("workspace_id", ""),
-                "prompt": content[:500],
-                "command": command,
-                "options": options or TOOL_OPTIONS
-            })
+            await publish_agent_blocked({**event, "pane_id": raw_pane_id, "host": host})
+        elif raw_pane_id and was_blocked and status and status != "blocked":
+            await publish_agent_status({**event, "pane_id": raw_pane_id}, status)
 
         if raw_pane_id and event.get("type") == "agent_event":
             await broadcast({
@@ -626,7 +809,7 @@ def is_loopback_host(host):
 
 
 async def process_request(connection, request):
-    """Handle WebSocket upgrades and HTTP GET /push?d=... on the same port."""
+    """Authenticate WebSocket upgrades and answer HTTP health checks."""
     from websockets.http11 import Response
     from websockets.datastructures import Headers
 
@@ -648,33 +831,434 @@ async def process_request(connection, request):
     if upgrade == "websocket":
         return None  # proceed with WebSocket handshake
 
-    # HTTP GET — parse event from URL query params.
-    # (since we can't read request body in websockets 16)
-    # Plugins should encode payload in the URL path: /push?d=...
-    if "?" in (request.path or ""):
-        _, qs = request.path.split("?", 1)
-        params = urllib.parse.parse_qs(qs)
-        if "d" in params:
-            try:
-                event = json.loads(urllib.parse.unquote(params["d"][0]))
-                event_queue.put_nowait(event)
-            except Exception:
-                pass
-
     headers = Headers()
     return Response(200, "OK", headers, b"ok\n")
+
+
+def request_id_for(msg):
+    request_id = msg.get("request_id", "") if isinstance(msg, dict) else ""
+    if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", request_id):
+        return request_id
+    return f"relay-{secrets.token_urlsafe(10)}"
+
+
+def command_details(msg, details=None):
+    result = dict(details or {})
+    client_id = compact_text(msg.get("client_id"), 120) if isinstance(msg, dict) else ""
+    if client_id:
+        result["client_id"] = client_id
+    return result
+
+
+def parsed_herdr_output(output):
+    if not output:
+        return None
+    try:
+        parsed = json.loads(output)
+    except json.JSONDecodeError:
+        return {"message": compact_text(output, 500)}
+    if isinstance(parsed, dict) and isinstance(parsed.get("result"), dict):
+        return parsed["result"]
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
+def nested_value(value, key):
+    if isinstance(value, dict):
+        if value.get(key):
+            return value[key]
+        for child in value.values():
+            found = nested_value(child, key)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = nested_value(child, key)
+            if found:
+                return found
+    return None
+
+
+async def resolve_started_agent(data, name):
+    pane_id = nested_value(data, "pane_id")
+    workspace_id = nested_value(data, "workspace_id")
+    if pane_id and workspace_id:
+        return str(pane_id), str(workspace_id)
+    await asyncio.sleep(0.35)
+    ok, output, _error = await run_herdr_async_result("agent", "get", name)
+    if not ok:
+        return "", ""
+    current = parsed_herdr_output(output)
+    return str(nested_value(current, "pane_id") or ""), str(nested_value(current, "workspace_id") or "")
+
+
+async def move_started_agent_to_new_tab(pane_id, workspace_id, label):
+    if not pane_id or not workspace_id:
+        return False, None, "Started agent identity is incomplete"
+    ok, output, error = await run_herdr_async_result(
+        "pane", "move", pane_id,
+        "--new-tab", "--workspace", workspace_id,
+        "--label", label, "--no-focus",
+    )
+    return ok, parsed_herdr_output(output), error
+
+
+async def start_agent_in_new_tab(profile, name, cwd):
+    ok, output, error = await run_herdr_async_result(
+        "agent", "start", name, "--cwd", str(cwd), "--no-focus", "--", *profile["argv"]
+    )
+    data = parsed_herdr_output(output)
+    if not ok:
+        return False, data, "", "", error
+
+    pane_id, workspace_id = await resolve_started_agent(data, name)
+    placed, placement, placement_error = await move_started_agent_to_new_tab(pane_id, workspace_id, name)
+    if not placed:
+        return True, data, pane_id, placement_error, ""
+
+    data = {"agent": data, "placement": placement}
+    pane_id = str(nested_value(placement, "pane_id") or pane_id)
+    return True, data, pane_id, "", ""
+
+
+async def send_prompt_to_pane(pane_id, prompt, is_codex=False):
+    ok, _output, error = await run_herdr_async_result("pane", "send-text", pane_id, prompt)
+    if ok:
+        ok, _output, error = await run_herdr_async_result("pane", "send-keys", pane_id, "Enter")
+    if ok and is_codex:
+        await asyncio.sleep(0.16)
+        ok, _output, error = await run_herdr_async_result("pane", "send-keys", pane_id, "Tab")
+    return ok, error
+
+
+def agent_for_pane(pane_id):
+    agents = get_agents()
+    if agents is None:
+        return None, "Unable to read current Herdr agents"
+    agent = next((item for item in agents if item.get("pane_id") == pane_id), None)
+    if not agent:
+        return None, "Agent is no longer available"
+    return agent, ""
+
+
+async def safe_send_json(ws, payload):
+    try:
+        await ws.send(json.dumps(payload))
+        return True
+    except Exception:
+        return False
+
+
+async def send_command_result(ws, request_id, action, ok, phase="completed", error="", pane_id="", data=None):
+    payload = {
+        "type": "command_result",
+        "request_id": request_id,
+        "action": action,
+        "ok": bool(ok),
+        "phase": phase,
+        "error": compact_text(error, 500),
+        "pane_id": pane_id,
+    }
+    if data is not None:
+        payload["data"] = data
+    await safe_send_json(ws, payload)
+
+
+async def complete_command(
+    ws,
+    request_id,
+    action,
+    ok,
+    summary,
+    *,
+    error="",
+    pane_id="",
+    agent="",
+    project="",
+    phase="completed",
+    data=None,
+    details=None,
+):
+    await send_command_result(
+        ws,
+        request_id,
+        action,
+        ok,
+        phase=phase if ok else "failed",
+        error=error,
+        pane_id=pane_id,
+        data=data,
+    )
+    await publish_activity(
+        action,
+        phase if ok else "failed",
+        summary if ok else f"{summary}: {error or 'failed'}",
+        pane_id=pane_id,
+        agent=agent,
+        project=project,
+        request_id=request_id,
+        details=details,
+    )
+
+
+async def wait_for_approval_result(pane_id, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.35)
+        agents = await asyncio.to_thread(get_agents)
+        if agents is None:
+            continue
+        agent = next((item for item in agents if item.get("pane_id") == pane_id), None)
+        if not agent:
+            return True, "closed"
+        status = str(agent.get("status") or "unknown")
+        if status != "blocked":
+            return True, status
+    return False, "blocked"
+
+
+async def handle_respond_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id")
+    index = msg.get("index")
+    total = msg.get("total")
+    if (
+        not pane_id
+        or not isinstance(index, int)
+        or isinstance(index, bool)
+        or index < 0
+        or index >= 20
+        or (total is not None and (not isinstance(total, int) or isinstance(total, bool) or total < 2 or total > 20))
+    ):
+        await complete_command(ws, request_id, "approval", False, "Approval failed", error="Invalid approval request", pane_id=pane_id or "")
+        return
+    agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+    if error:
+        await complete_command(ws, request_id, "approval", False, "Approval failed", error=error, pane_id=pane_id)
+        return
+    if str(agent.get("status") or "").lower() != "blocked":
+        await complete_command(ws, request_id, "approval", False, "Approval skipped", error="Agent is no longer blocked", pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""))
+        return
+
+    keys = respond_keys(index, total)
+    ok, _output, error = await run_herdr_async_result("pane", "send-keys", pane_id, *keys)
+    choice = compact_text(msg.get("choice") or f"option {index + 1}", 120)
+    if not ok:
+        await complete_command(ws, request_id, "approval", False, f"Approval {choice}", error=error, pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""))
+        return
+
+    await send_command_result(ws, request_id, "approval", True, phase="accepted", pane_id=pane_id)
+    confirmed, status = await wait_for_approval_result(pane_id)
+    phase = "confirmed" if confirmed else "unconfirmed"
+    summary = f"Approval {choice}"
+    await complete_command(
+        ws,
+        request_id,
+        "approval",
+        True,
+        summary,
+        pane_id=pane_id,
+        agent=agent.get("agent", ""),
+        project=agent.get("project", ""),
+        phase=phase,
+        details=command_details(msg, {"choice": choice, "resulting_status": status, "source": msg.get("source") or "App"}),
+    )
+
+
+async def handle_submit_prompt_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    prompt = msg.get("text", "")
+    if not pane_id or not isinstance(prompt, str) or not prompt.strip():
+        await complete_command(ws, request_id, "prompt", False, "Prompt failed", error="Prompt text is required", pane_id=pane_id)
+        return
+    if len(prompt) > 20000:
+        await complete_command(ws, request_id, "prompt", False, "Prompt failed", error="Prompt is longer than 20,000 characters", pane_id=pane_id)
+        return
+    agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+    if error:
+        await complete_command(ws, request_id, "prompt", False, "Prompt failed", error=error, pane_id=pane_id)
+        return
+    is_codex = bool(re.search(r"\bcodex\b", str(agent.get("agent") or ""), re.IGNORECASE))
+    ok, error = await send_prompt_to_pane(pane_id, prompt, is_codex)
+    await complete_command(
+        ws,
+        request_id,
+        "prompt",
+        ok,
+        "Prompt sent",
+        error=error,
+        pane_id=pane_id,
+        agent=agent.get("agent", ""),
+        project=agent.get("project", ""),
+        details=command_details(msg, {"preview": compact_text(prompt, 120)}),
+    )
+
+
+async def handle_send_keys_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    keys = msg.get("keys", [])
+    if not pane_id or not isinstance(keys, list) or not keys or not all(isinstance(key, str) and 0 < len(key) <= 40 for key in keys):
+        await send_command_result(ws, request_id, "keys", False, phase="failed", error="Invalid key request", pane_id=pane_id)
+        return
+    ok, _output, error = await run_herdr_async_result("pane", "send-keys", pane_id, *keys)
+    activity_label = compact_text(msg.get("activity_label"), 120)
+    if activity_label:
+        await complete_command(ws, request_id, "keys", ok, activity_label, error=error, pane_id=pane_id, details=command_details(msg, {"keys": ", ".join(keys)}))
+    else:
+        await send_command_result(ws, request_id, "keys", ok, error=error, phase="completed" if ok else "failed", pane_id=pane_id)
+
+
+async def handle_agent_start_command(ws, msg):
+    request_id = request_id_for(msg)
+    profiles = load_agent_profiles()
+    profile_id = str(msg.get("profile_id") or "")
+    profile = profiles.get(profile_id)
+    name = compact_text(msg.get("name"), 48)
+    cwd_value = str(msg.get("cwd") or "").strip()
+    prompt = msg.get("prompt", "")
+    if not profile:
+        await complete_command(ws, request_id, "agent_start", False, "Agent start failed", error="Unknown or unavailable agent profile")
+        return
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}", name):
+        await complete_command(ws, request_id, "agent_start", False, "Agent start failed", error="Name must use letters, numbers, dots, underscores, or dashes")
+        return
+    cwd, cwd_error = resolve_agent_cwd(cwd_value)
+    if cwd_error:
+        await complete_command(ws, request_id, "agent_start", False, "Agent start failed", error=cwd_error)
+        return
+    if not isinstance(prompt, str) or len(prompt) > 20000:
+        await complete_command(ws, request_id, "agent_start", False, "Agent start failed", error="Initial task is longer than 20,000 characters")
+        return
+
+    ok, data, pane_id, placement_error, error = await start_agent_in_new_tab(profile, name, cwd)
+    warnings = []
+    if placement_error:
+        warnings.append(f"Agent started, but a dedicated tab could not be created: {placement_error}")
+    if ok and prompt.strip():
+        if pane_id:
+            await asyncio.sleep(0.25)
+            prompt_ok, prompt_error = await send_prompt_to_pane(str(pane_id), prompt.strip(), profile_id == "codex")
+            if not prompt_ok:
+                warnings.append(f"Agent started, but the initial task failed: {prompt_error}")
+        else:
+            warnings.append("Agent started, but its pane could not be found for the initial task")
+    warning = "; ".join(warnings)
+    if isinstance(data, dict) and warning:
+        data = {**data, "warning": warning}
+    await complete_command(
+        ws,
+        request_id,
+        "agent_start",
+        ok,
+        f"Started {name}",
+        error=error,
+        agent=profile["label"],
+        project=cwd.name,
+        data=data,
+        phase="completed_with_warning" if ok and warning else "completed",
+        details=command_details(msg, {"profile": profile["label"], "cwd": str(cwd)}),
+    )
+
+
+async def handle_agent_rename_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    name = compact_text(msg.get("name"), 80)
+    if not pane_id or not name:
+        await complete_command(ws, request_id, "agent_rename", False, "Rename failed", error="Agent and name are required", pane_id=pane_id)
+        return
+    agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+    if error:
+        await complete_command(ws, request_id, "agent_rename", False, "Rename failed", error=error, pane_id=pane_id)
+        return
+    ok, _output, error = await run_herdr_async_result("agent", "rename", pane_id, name)
+    await complete_command(ws, request_id, "agent_rename", ok, f"Renamed agent to {name}", error=error, pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""), details=command_details(msg))
+
+
+async def handle_agent_stop_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    if not pane_id:
+        await complete_command(ws, request_id, "agent_stop", False, "Stop failed", error="Agent is required")
+        return
+    agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+    if error:
+        await complete_command(ws, request_id, "agent_stop", False, "Stop failed", error=error, pane_id=pane_id)
+        return
+    ok, _output, error = await run_herdr_async_result("pane", "close", pane_id)
+    await complete_command(ws, request_id, "agent_stop", ok, "Stopped agent", error=error, pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""), details=command_details(msg))
+
+
+async def handle_agent_clear_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    if not pane_id:
+        await complete_command(ws, request_id, "agent_clear", False, "Clear failed", error="Agent is required")
+        return
+    agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+    if error:
+        await complete_command(ws, request_id, "agent_clear", False, "Clear failed", error=error, pane_id=pane_id)
+        return
+    profiles = load_agent_profiles()
+    agent_label = re.sub(r"[^a-z0-9]+", "-", str(agent.get("agent") or "").lower()).strip("-")
+    profile = profiles.get(agent_label)
+    if not profile:
+        profile = next((value for key, value in profiles.items() if key in agent_label or key in str(agent.get("agent") or "").lower()), None)
+    if not profile:
+        await complete_command(ws, request_id, "agent_clear", False, "Clear failed", error="This agent does not match an available launch profile", pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""))
+        return
+    cwd, cwd_error = resolve_agent_cwd(agent.get("cwd", ""))
+    if cwd_error:
+        await complete_command(ws, request_id, "agent_clear", False, "Clear failed", error=cwd_error, pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""))
+        return
+
+    name = f"clear-{profile['id']}-{int(time.time()) % 100000}"
+    ok, data, replacement_pane_id, placement_error, error = await start_agent_in_new_tab(profile, name, cwd)
+    warning = ""
+    if ok and placement_error:
+        if replacement_pane_id:
+            await run_herdr_async_result("pane", "close", replacement_pane_id)
+        ok = False
+        error = f"Replacement could not be placed in a dedicated tab: {placement_error}"
+    elif ok:
+        close_ok, _close_output, close_error = await run_herdr_async_result("pane", "close", pane_id)
+        if not close_ok:
+            warning = f"Replacement started, but the old pane could not be closed: {close_error}"
+            data["warning"] = warning
+    await complete_command(
+        ws,
+        request_id,
+        "agent_clear",
+        ok,
+        "Cleared agent",
+        error=error,
+        pane_id=pane_id,
+        agent=agent.get("agent", ""),
+        project=agent.get("project", ""),
+        phase="completed_with_warning" if ok and warning else "completed",
+        data=data,
+        details=command_details(msg, {"profile": profile["label"], "cwd": str(cwd)}),
+    )
 
 
 async def handle_client(ws):
     clients.add(ws)
     try:
-        try:
-            await ws.send(json.dumps({
-                "type": "push_config",
-                "vapid_public_key": ensure_vapid_public_key(),
-            }))
-        except Exception:
-            pass
+        profiles = load_agent_profiles()
+        await safe_send_json(ws, {
+            "type": "push_config",
+            "vapid_public_key": ensure_vapid_public_key(),
+            "host": LOCAL_HOST,
+            "agent_profiles": [
+                {"id": profile["id"], "label": profile["label"]}
+                for profile in profiles.values()
+            ],
+        })
+        await safe_send_json(ws, {
+            "type": "activity_history",
+            "activities": await asyncio.to_thread(load_activity),
+        })
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -684,13 +1268,7 @@ async def handle_client(ws):
                 continue
             msg_type = msg.get("type")
             if msg_type == "respond":
-                pane_id = msg.get("pane_id")
-                index = msg.get("index")
-                if pane_id and isinstance(index, int) and index >= 0:
-                    keys = respond_keys(index, msg.get("total"))
-                    await run_herdr_async("pane", "send-keys", pane_id, *keys)
-            elif msg_type == "agent_event":
-                event_queue.put_nowait(msg)
+                await handle_respond_command(ws, msg)
             elif msg_type == "push_subscribe":
                 ok = await asyncio.to_thread(
                     store_push_subscription,
@@ -699,14 +1277,19 @@ async def handle_client(ws):
                     msg.get("client_id", ""),
                     msg.get("replace_endpoints", []),
                 )
-                await ws.send(json.dumps({"type": "push_subscribed", "ok": ok}))
+                await safe_send_json(ws, {"type": "push_subscribed", "ok": ok})
             elif msg_type == "push_unsubscribe":
                 ok = await asyncio.to_thread(
                     remove_push_subscription_records,
                     msg.get("endpoints", []),
                     msg.get("client_id", ""),
                 )
-                await ws.send(json.dumps({"type": "push_unsubscribed", "ok": ok}))
+                await safe_send_json(ws, {"type": "push_unsubscribed", "ok": ok})
+            elif msg_type == "get_activity":
+                await safe_send_json(ws, {
+                    "type": "activity_history",
+                    "activities": await asyncio.to_thread(load_activity, msg.get("limit", ACTIVITY_MAX_ITEMS)),
+                })
             elif msg_type == "read_pane":
                 pane_id = msg.get("pane_id")
                 if not pane_id:
@@ -716,41 +1299,56 @@ async def handle_client(ws):
                 content = await run_herdr_async(
                     "pane", "read", pane_id,
                     "--lines", str(lines),
-                    "--source", "recent",
+                    "--source", "recent-unwrapped",
                     "--format", fmt,
                 )
-                await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "content": content or "", "format": fmt}))
+                await safe_send_json(ws, {"type": "pane_content", "pane_id": pane_id, "content": content or "", "format": fmt})
+            elif msg_type == "submit_prompt":
+                await handle_submit_prompt_command(ws, msg)
             elif msg_type == "send_keys":
-                pane_id = msg.get("pane_id")
-                if not pane_id:
-                    continue
-                keys = msg.get("keys", [])
-                if isinstance(keys, list) and all(isinstance(k, str) for k in keys):
-                    await run_herdr_async("pane", "send-keys", pane_id, *keys)
+                await handle_send_keys_command(ws, msg)
             elif msg_type == "send_text":
-                pane_id = msg.get("pane_id")
-                if not pane_id:
-                    continue
+                request_id = request_id_for(msg)
+                pane_id = msg.get("pane_id", "")
                 text = msg.get("text", "")
-                if isinstance(text, str):
-                    await run_herdr_async("pane", "send-text", pane_id, text)
+                if not pane_id or not isinstance(text, str) or not text:
+                    await complete_command(ws, request_id, "text", False, "Text input failed", error="Text and agent are required", pane_id=pane_id)
+                    continue
+                ok, _output, error = await run_herdr_async_result("pane", "send-text", pane_id, text)
+                await complete_command(ws, request_id, "text", ok, "Text inserted", error=error, pane_id=pane_id, details=command_details(msg, {"preview": compact_text(text, 120)}))
+            elif msg_type == "agent_start":
+                await handle_agent_start_command(ws, msg)
+            elif msg_type == "agent_rename":
+                await handle_agent_rename_command(ws, msg)
+            elif msg_type == "agent_stop":
+                await handle_agent_stop_command(ws, msg)
+            elif msg_type in {"agent_clear", "agent_restart"}:
+                await handle_agent_clear_command(ws, msg)
             elif msg_type == "upload_image":
                 pane_id = msg.get("pane_id", "")
-                request_id = msg.get("request_id", "")
+                request_id = request_id_for(msg)
                 ok, error, path = await asyncio.to_thread(
                     store_uploaded_image,
                     msg.get("filename", ""),
                     msg.get("mime", ""),
                     msg.get("data", ""),
                 )
-                await ws.send(json.dumps({
+                await safe_send_json(ws, {
                     "type": "upload_result",
                     "ok": ok,
                     "error": error,
                     "path": path or "",
                     "pane_id": pane_id,
                     "request_id": request_id,
-                }))
+                })
+                await publish_activity(
+                    "upload",
+                    "completed" if ok else "failed",
+                    f"Attached {compact_text(msg.get('filename') or 'image', 100)}" if ok else f"Image upload failed: {error}",
+                    pane_id=pane_id,
+                    request_id=request_id,
+                    details=command_details(msg, {"path": path or ""}),
+                )
     except ConnectionClosed:
         pass
     finally:
@@ -779,7 +1377,7 @@ async def main():
     asyncio.create_task(poll_loop())
     asyncio.create_task(event_push())
     server = await serve(handle_client, WS_HOST, WS_PORT, process_request=process_request, max_size=WS_MAX_SIZE)
-    print(f"Herdr Mobile Relay on {WS_HOST}:{WS_PORT} (WebSocket + HTTP GET push)")
+    print(f"Herdr Mobile Relay on {WS_HOST}:{WS_PORT} (WebSocket + HTTP health check)")
     print(f"  polling: {LOCAL_HOST}")
     stop = loop.create_future()
     def request_stop():

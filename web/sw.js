@@ -17,14 +17,20 @@ self.addEventListener('push', event => {
   }
 
   const title = payload.title || 'Herdr agent blocked';
+  const actionUrls = payload.action_urls || {};
   const options = {
     body: payload.body || 'An agent needs approval.',
     tag: payload.tag || 'herdr-blocked',
     renotify: true,
     icon: HERDR_NOTIFICATION_ICON,
     badge: HERDR_NOTIFICATION_BADGE,
+    actions: [
+      {action: 'approve', title: 'Approve once'},
+      {action: 'deny', title: 'Deny'},
+    ],
     data: {
       url: payload.url || './',
+      actionUrls,
     },
   };
 
@@ -33,7 +39,10 @@ self.addEventListener('push', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  const url = new URL(event.notification.data && event.notification.data.url || './', self.location.origin + '/').href;
+  const data = event.notification.data || {};
+  const actionUrls = data.actionUrls || data.action_urls || {};
+  const actionUrl = event.action && actionUrls[event.action];
+  const url = new URL(actionUrl || data.url || './', self.location.origin + '/').href;
 
   // One action per click: the click's user activation only reliably funds a
   // single focus/openWindow call, so never chain attempts. A visible window

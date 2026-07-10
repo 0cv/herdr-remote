@@ -4,6 +4,9 @@ Approve [Herdr](https://herdr.dev) agents from your phone across multiple comput
 
 Herdr Mobile Relay runs a small local relay on each computer, exposes each relay through its own Cloudflare Tunnel hostname, and lets one static web app connect to all of them. The phone UI merges agents from every configured relay, so you can approve or inspect agents running on a Mac, a Fedora workstation, or any other supported machine without making those computers connect to each other.
 
+> [!IMPORTANT]
+> Herdr Mobile Relay currently supports only Linux and macOS. Windows is not supported.
+
 ## Screenshots
 
 | Agents                                                                                                             | Terminal                                                                                                                 |
@@ -24,9 +27,11 @@ The upstream project established the core idea: control Herdr approval prompts f
 
 - **Multi-computer phone UI:** one static web app connects to multiple independent relays and merges Mac, Fedora, or other hosts into one agent list.
 - **Per-machine isolation:** each computer runs only its own local relay and `herdr` CLI calls; relays do not SSH into each other or share state.
-- **PWA notifications:** installed phones can receive Web Push notifications when an agent blocks, including per-relay push subscriptions and notification click-through back to the right terminal.
+- **PWA notifications:** installed phones can receive Web Push notifications when an agent blocks, including Approve once and Deny actions that route through the configured relay and device unlock.
 - **Mobile terminal composer:** terminal view has a compact phone-first composer, quick terminal keys, inline approval actions, themes, font sizing, and a jump-to-bottom affordance.
 - **Real approval handling:** blocked cards parse prompt text and approval options, then map visible choices back to the correct Herdr key actions for Codex and Claude Code.
+- **Confirmed controls and activity:** command acknowledgements report failures explicitly, approvals wait for an observed state change, and a bounded per-relay activity history is merged on the phone.
+- **Remote agent management:** start automatically detected installed agents, then rename, clear, or stop them from the phone.
 - **Screenshot/photo upload:** attach an image from the phone, store it on the target computer, and insert the local path into the agent prompt.
 - **Optional device unlock:** require the phone's platform authenticator before reconnecting relays after open, reload, or resume.
 - **Service installers:** macOS launchd and Linux/Fedora user systemd installers set up the relay, tunnel, token, and cleanup of older service names.
@@ -42,7 +47,7 @@ The upstream project established the core idea: control Herdr approval prompts f
 
 **Short description:** Approve Herdr agents from your phone across multiple computers.
 
-**Long description:** Run one local relay per computer, expose each relay through Cloudflare Tunnel, and manage all agents from one installable mobile web app. Herdr Mobile Relay keeps machines independent: there is no SSH fan-out, central broker, Telegram bot, or native mobile app to install. It adds multi-relay agent merging, Web Push notifications for blocked agents, phone-side terminal controls, inline approvals, screenshot/photo upload, optional device unlock, and service installers for macOS and Linux/Fedora.
+**Long description:** Run one local relay per computer, expose each relay through Cloudflare Tunnel, and manage all agents from one installable mobile web app. Herdr Mobile Relay keeps machines independent: there is no SSH fan-out, central broker, Telegram bot, or native mobile app to install. It adds multi-relay agent merging, actionable Web Push notifications, confirmed terminal and approval controls, remote agent lifecycle management, merged activity history, screenshot/photo upload, optional device unlock, and service installers for macOS and Linux.
 
 **Tags:** mobile, relay, cloudflare, multi-machine, approvals
 
@@ -55,7 +60,9 @@ The upstream project established the core idea: control Herdr approval prompts f
 - Uses relay labels from the web app, such as `Mac` or `Fedora`, as the visible host badges.
 - Shows blocked prompts with inline approval buttons on the agent list and in the terminal view.
 - Sends Web Push notifications for blocked agents to installed phones, even when the app is closed or suspended.
-- Routes notification taps back to the matching relay and pane when the app can resolve it.
+- Routes notification taps and Approve once/Deny actions back to the matching relay and pane when the app can resolve it.
+- Confirms remote commands and records blocked, resolved, approval, prompt, upload, and lifecycle activity locally on each relay.
+- Starts automatically detected installed agents and supports rename, clear, and stop controls.
 - Uploads screenshots and photos from the phone to the connected relay's local filesystem.
 - Provides a compact mobile terminal UI with send, attach, terminal keys, themes, and font-size controls.
 - Can require fingerprint, face unlock, or passcode verification before reconnecting relays.
@@ -67,21 +74,45 @@ The upstream project established the core idea: control Herdr approval prompts f
 - It does not use SSH remotes or SSH fan-out.
 - It does not run a central hosted broker.
 - It does not require Telegram, a native iOS app, or a native macOS menu bar app.
+- It does not currently run on Windows.
 
 ## Components
 
-- **Relay:** Python WebSocket/HTTP service on port `8375`.
+- **Relay:** Python WebSocket service with an HTTP health response on port `8375`.
 - **Web app:** static mobile UI in `web/`; stores relay configs in browser local storage.
 - **Cloudflare Tunnel:** optional but recommended public access layer for each relay.
 - **Background services:** launchd on macOS and user systemd on Linux/Fedora start the relay and `cloudflared`.
 - **Herdr plugin hook:** optional local event push from `herdr` into the local relay over UDP.
 
+## Requirements
+
+- Linux or macOS; Windows is not currently supported
+- Git and Make
+- Python 3.10+ and [uv](https://docs.astral.sh/uv/)
+- [Herdr](https://herdr.dev) 0.7+
+- `cloudflared` for phone access through a tunnel
+- Node.js/npm for the included Cloudflare Pages deployment command and JavaScript checks
+
 ## Quick Start
 
-Start a temporary relay and Cloudflare quick tunnel:
+Clone the repository, prepare the local configuration, and check prerequisites:
 
 ```bash
-./relay/start.sh
+git clone https://github.com/0cv/herdr-mobile-relay.git
+cd herdr-mobile-relay
+make setup
+```
+
+Deploy the static phone app once. `make setup` creates `.env` with the default Pages project name; edit `WEB_PROJECT` there first if needed.
+
+```bash
+make web-deploy
+```
+
+Then start a temporary relay and Cloudflare quick tunnel:
+
+```bash
+make quick-start
 ```
 
 The script prints:
@@ -92,7 +123,9 @@ WebSocket:  wss://example.trycloudflare.com
 Token:      0123456789abcdef0123456789abcdef
 ```
 
-Open your deployed web app on your phone and add both the `wss://...trycloudflare.com` URL and token in Settings. Quick tunnels are temporary; the hostname changes when the tunnel restarts. The token is generated in `relay/.env` and reused on later quick-start runs.
+Open your deployed web app on your phone and add both the `wss://...trycloudflare.com` URL and token in Settings. Quick tunnels are temporary; the hostname changes when the tunnel restarts. The generated token is stored in `relay/.env` and reused on later runs.
+
+If you already have a hosted copy of `web/`, skip `make web-deploy`. See [QUICKSTART.md](QUICKSTART.md) for the condensed flow.
 
 ## Web App
 
@@ -101,8 +134,7 @@ The web app is static and lives in `web/`.
 Deploy it anywhere that can host static files over HTTPS. With Cloudflare Pages direct upload:
 
 ```bash
-cp .env.example .env
-# edit WEB_PROJECT in .env
+# make setup creates .env; edit WEB_PROJECT there if needed
 make web-deploy
 ```
 
@@ -134,9 +166,15 @@ In the app Settings, add one relay entry per computer:
 
 Then tap **Enable Notifications** in Settings. The relay generates Web Push VAPID keys in `relay/push/` and stores this device's push subscription there, so installed PWAs can be notified even when the app is closed or suspended.
 
-For multiple relays, the app creates one scoped service-worker push subscription per relay. Each relay can keep its own VAPID keypair under its own `relay/push/` directory. Set `HERDR_RELAY_PUSH_DIR` or `HERDR_VAPID_PRIVATE_KEY` only if you want to move that runtime state or intentionally share one keypair across machines.
+For multiple relays, the app creates one scoped service-worker push subscription per relay. Each relay keeps its standard VAPID keypair and subscriptions privately under `relay/push/`; no push configuration is required.
 
-In the terminal view, tap the image icon to attach a screenshot or photo. The web app uploads the image to the connected relay, the relay saves it on that computer under `~/.cache/herdr-mobile-relay/uploads` by default, and the app inserts the local file path into the prompt. Set `HERDR_UPLOAD_DIR` or `HERDR_UPLOAD_MAX_BYTES` to change the upload directory or size limit.
+In the terminal view, tap the image icon to attach a screenshot or photo. The web app uploads images up to 10 MB to `~/.cache/herdr-mobile-relay/uploads` on that computer and inserts the local file path into the prompt.
+
+Use **＋** in the app header to start an agent on a connected computer. The relay exposes detected `codex`, `claude`, and `opencode` executables as safe launch profiles. Each launched agent is moved into its own named tab so it cannot inherit another agent's tab label. The initial task is sent as literal terminal input after Herdr creates the agent; it is never interpreted by a shell. Use **•••** from a terminal to rename, clear, or stop that agent. Clear starts a fresh replacement with the same detected profile and working directory, moves it to a dedicated tab, and then closes the old pane.
+
+Use **◷** to view and search the merged activity history from all connected relays. Each relay keeps the latest 500 entries in `~/.cache/herdr-mobile-relay/activity.jsonl`. Prompt activity stores only a short preview, not full terminal output.
+
+The relay automatically exposes installed Codex, Claude Code, and OpenCode executables in the Start Agent form. There is no profile configuration, and the browser cannot submit an executable or arbitrary shell command. Launch directories stay inside the current user's home directory.
 
 ## Stable Hostnames
 
@@ -188,34 +226,20 @@ Do not run multiple computers as replicas of the same Cloudflare Tunnel if they 
 
 ## Background Services
 
-The background service starts both the relay and `cloudflared`.
-
-On macOS:
+The background service starts both the relay and `cloudflared`. The generic commands detect macOS or Linux automatically:
 
 ```bash
-make macos-service-install
-make macos-service-status
-make macos-service-logs
-make macos-service-uninstall
+make service-install
+make service-status
+make service-logs
+make service-uninstall
 ```
 
-On Fedora/Linux:
+The older `make macos-service-*` and `make linux-service-*` targets remain available for explicit platform-specific use.
 
-```bash
-make linux-service-install
-make linux-service-status
-make linux-service-logs
-make linux-service-uninstall
-```
-
-The service uses `relay/.env` for:
+Normal installs need only two values in `relay/.env`. `make setup` generates the token, and the stable service installer adds the tunnel path:
 
 ```env
-HERDR_RELAY_HOST=127.0.0.1
-HERDR_RELAY_PORT=8375
-HERDR_RELAY_PLUGIN_PORT=8376
-HERDR_RELAY_POLL_INTERVAL=2
-HERDR_ALLOWED_ORIGINS=
 HERDR_RELAY_TOKEN=<shared-secret>
 CLOUDFLARED_CONFIG=$HOME/.cloudflared/config-herdr-mobile-relay.yml
 ```
@@ -247,7 +271,7 @@ The relay polls local `herdr` every few seconds. For faster blocked-agent update
 make relay-plugin
 ```
 
-The plugin sends local agent-status events to the local relay over UDP on `127.0.0.1:8376`. It does not expose another network service and does not connect to other computers. If you change `HERDR_RELAY_PLUGIN_PORT`, the plugin hook reads the same `relay/.env` file so the relay and hook stay aligned.
+The plugin sends local agent-status events to the local relay over UDP on `127.0.0.1:8376`. It does not expose another network service and does not connect to other computers.
 
 ## Security Model
 
@@ -258,11 +282,6 @@ The plugin sends local agent-status events to the local relay over UDP on `127.0
 - The web app stores relay URLs and tokens in browser local storage on the device where you configure it.
 - Web Push VAPID private keys and push subscriptions are local runtime state in `relay/push/`; keep that directory private and do not commit it.
 - A connected web client can send text and key input to Herdr panes exposed by that relay. Treat relay URLs and tokens as sensitive.
-- The relay executes only local `herdr pane ...` commands; it does not shell into other machines.
-
-## Requirements
-
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/)
-- `cloudflared` for remote access
-- Herdr 0.7+
+- Notification action payloads contain only relay/pane routing metadata. The PWA reconnects with its locally stored relay credential and performs device verification when enabled before sending the action.
+- Agent launch requests select only from supported executables automatically found by the relay; the browser cannot submit an executable or shell command.
+- The relay executes only fixed local `herdr pane ...` and supported `herdr agent ...` operations; it does not shell into other machines.

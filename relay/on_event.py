@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Local plugin hook for Herdr Mobile Relay."""
-import json, os, socket
+import json
+import os
+import socket
 from pathlib import Path
 
 

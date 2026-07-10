@@ -12,62 +12,11 @@ LEGACY_UNIT_FILE="$UNIT_DIR/$LEGACY_LABEL"
 
 export PATH="$HOME/.local/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
-generate_token() {
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 16
-    else
-        uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-'
-    fi
-}
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/common.sh"
 
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck source=/dev/null
-    . "$ENV_FILE"
-    set +a
-fi
-
+load_relay_env "$ENV_FILE"
 CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config-herdr-mobile-relay.yml}"
-
-ensure_env() {
-    if [ ! -f "$ENV_FILE" ]; then
-        umask 077
-        cat > "$ENV_FILE" <<EOF
-HERDR_RELAY_HOST=127.0.0.1
-HERDR_RELAY_PORT=8375
-HERDR_RELAY_PLUGIN_PORT=8376
-HERDR_RELAY_POLL_INTERVAL=2
-HERDR_ALLOWED_ORIGINS=
-HERDR_RELAY_TOKEN=$(generate_token)
-CLOUDFLARED_CONFIG=$CLOUDFLARED_CONFIG
-EOF
-        echo "Created $ENV_FILE"
-        return
-    fi
-
-    chmod 600 "$ENV_FILE"
-    if ! grep -q '^HERDR_RELAY_HOST=' "$ENV_FILE"; then
-        printf '\nHERDR_RELAY_HOST=127.0.0.1\n' >> "$ENV_FILE"
-    fi
-    if ! grep -q '^HERDR_RELAY_PORT=' "$ENV_FILE"; then
-        printf '\nHERDR_RELAY_PORT=8375\n' >> "$ENV_FILE"
-    fi
-    if ! grep -q '^HERDR_RELAY_PLUGIN_PORT=' "$ENV_FILE"; then
-        printf '\nHERDR_RELAY_PLUGIN_PORT=8376\n' >> "$ENV_FILE"
-    fi
-    if ! grep -q '^HERDR_RELAY_POLL_INTERVAL=' "$ENV_FILE"; then
-        printf '\nHERDR_RELAY_POLL_INTERVAL=2\n' >> "$ENV_FILE"
-    fi
-    if ! grep -q '^HERDR_ALLOWED_ORIGINS=' "$ENV_FILE"; then
-        printf '\nHERDR_ALLOWED_ORIGINS=\n' >> "$ENV_FILE"
-    fi
-    if ! grep -q '^HERDR_RELAY_TOKEN=' "$ENV_FILE" || [ -z "$(sed -n 's/^HERDR_RELAY_TOKEN=//p' "$ENV_FILE" | tail -1)" ]; then
-        printf '\nHERDR_RELAY_TOKEN=%s\n' "$(generate_token)" >> "$ENV_FILE"
-    fi
-    if ! grep -q '^CLOUDFLARED_CONFIG=' "$ENV_FILE"; then
-        printf '\nCLOUDFLARED_CONFIG=%s\n' "$CLOUDFLARED_CONFIG" >> "$ENV_FILE"
-    fi
-}
 
 if ! command -v systemctl >/dev/null 2>&1; then
     echo "systemctl not found"
@@ -91,7 +40,7 @@ if [ ! -r "$CLOUDFLARED_CONFIG" ]; then
     exit 1
 fi
 
-ensure_env
+ensure_relay_env "$ENV_FILE" "$CLOUDFLARED_CONFIG"
 chmod +x "$SCRIPT_DIR/herdr-mobile-relay-service.sh"
 mkdir -p "$UNIT_DIR"
 
