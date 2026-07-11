@@ -114,6 +114,7 @@ MUTATING_MESSAGE_TYPES = frozenset({
     "agent_stop",
     "agent_clear",
     "agent_restart",
+    "acknowledge_pane",
     "upload_image",
 })
 
@@ -183,6 +184,8 @@ COMMAND_RE = re.compile(r"^\s*(?:[$>]|\u276f|\u203a)\s+(.+?)\s*$")
 
 clients = set()
 last_statuses = {}
+unseen_done_panes = set()
+acknowledged_done_panes = set()
 agent_activity_state = {}
 agent_activity_initialized = False
 agent_types = {}
@@ -259,6 +262,7 @@ def get_agents():
                     "agent": p.get("agent", ""),
                     "name": p.get("name") or p.get("label") or "",
                     "status": p.get("agent_status", "unknown"),
+                    "_focused": bool(p.get("focused")),
                     "cwd": p.get("cwd", ""),
                     "project": os.path.basename(p.get("cwd", "")),
                     "host": LOCAL_HOST,
@@ -275,6 +279,60 @@ def get_agents():
         return agents
     except (json.JSONDecodeError, KeyError):
         return None
+
+
+ATTENTION_STATUSES = {"working", "blocked"}
+DONE_STATUSES = {"done", "complete", "completed", "finished", "success", "succeeded", "unread"}
+
+
+def is_done_status(status):
+    normalized = str(status or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+    return normalized in DONE_STATUSES
+
+
+def register_status_transition(pane_id, status, previous, focused=False):
+    """Track Herdr's "finished, not yet viewed" state across API variants.
+
+    Some snapshots expose only idle after completion while others briefly
+    expose a done-like status. In both cases, completion remains done until the
+    pane is focused in Herdr or viewed from the phone.
+    """
+    if status in ATTENTION_STATUSES:
+        unseen_done_panes.discard(pane_id)
+        acknowledged_done_panes.discard(pane_id)
+    elif focused:
+        unseen_done_panes.discard(pane_id)
+        acknowledged_done_panes.add(pane_id)
+    elif status == "idle" and previous in ATTENTION_STATUSES:
+        acknowledged_done_panes.discard(pane_id)
+        unseen_done_panes.add(pane_id)
+    elif is_done_status(status) and previous in ATTENTION_STATUSES:
+        acknowledged_done_panes.discard(pane_id)
+
+
+def displayed_status(pane_id, status):
+    if pane_id in acknowledged_done_panes and (status == "idle" or is_done_status(status)):
+        return "idle"
+    if status == "idle" and pane_id in unseen_done_panes:
+        return "done"
+    return status
+
+
+async def acknowledge_pane_viewed(pane_id):
+    if pane_id not in agent_types:
+        return False
+    changed = pane_id in unseen_done_panes or pane_id not in acknowledged_done_panes
+    unseen_done_panes.discard(pane_id)
+    acknowledged_done_panes.add(pane_id)
+    if not changed:
+        return False
+    await broadcast({
+        "type": "agent_update",
+        "pane_id": pane_id,
+        "raw_pane_id": pane_id,
+        "status": "idle",
+    })
+    return changed
 
 
 def now_millis():
@@ -1044,6 +1102,15 @@ async def poll_loop():
             continue
         stamp_agent_activity(agents)
         live_pane_ids = {a["pane_id"] for a in agents}
+        raw_statuses = {}
+        for a in agents:
+            pid = a["pane_id"]
+            raw_status = a["status"]
+            raw_statuses[pid] = raw_status
+            register_status_transition(pid, raw_status, last_statuses.get(pid), a.pop("_focused", False))
+            a["status"] = displayed_status(pid, raw_status)
+        unseen_done_panes.intersection_update(live_pane_ids)
+        acknowledged_done_panes.intersection_update(live_pane_ids)
         agent_types.clear()
         agent_types.update({a["pane_id"]: str(a.get("agent") or "").lower() for a in agents})
         for pane_id in set(claude_history_state) - live_pane_ids:
@@ -1055,7 +1122,8 @@ async def poll_loop():
             del last_statuses[pane_id]
         if agents:
             for a in agents:
-                pid, status = a["pane_id"], a["status"]
+                pid = a["pane_id"]
+                status = raw_statuses[pid]
                 previous_status = last_statuses.get(pid)
                 if status in {"working", "blocked"} or previous_status != status:
                     schedule_claude_history_capture(a)
@@ -1076,7 +1144,9 @@ async def event_push():
         previous_status = last_statuses.get(raw_pane_id) if raw_pane_id else None
         was_blocked = previous_status == "blocked"
         if raw_pane_id and status:
+            register_status_transition(raw_pane_id, status, previous_status)
             last_statuses[raw_pane_id] = status
+            status = displayed_status(raw_pane_id, status)
 
         if status == "blocked" and raw_pane_id and not was_blocked:
             await publish_agent_blocked({**event, "pane_id": raw_pane_id, "host": host})
@@ -1726,6 +1796,8 @@ async def handle_client(ws):
                 pane_id = msg.get("pane_id")
                 if not pane_id:
                     continue
+                # Opening a terminal on the phone counts as viewing the pane.
+                await acknowledge_pane_viewed(pane_id)
                 try:
                     lines = min(max(int(msg.get("lines", 30)), 1), CLAUDE_HISTORY_MAX_LINES)
                 except (TypeError, ValueError):
@@ -1744,6 +1816,26 @@ async def handle_client(ws):
                     else:
                         content = merge_claude_history(pane_id, content, lines)
                 await safe_send_json(ws, {"type": "pane_content", "pane_id": pane_id, "content": content or "", "format": fmt})
+            elif msg_type == "acknowledge_pane":
+                pane_id = msg.get("pane_id", "")
+                if not pane_id or pane_id not in agent_types:
+                    await send_command_result(
+                        ws,
+                        msg.get("request_id", ""),
+                        "acknowledge_pane",
+                        False,
+                        phase="failed",
+                        error="Agent is unavailable",
+                    )
+                    continue
+                await acknowledge_pane_viewed(pane_id)
+                await send_command_result(
+                    ws,
+                    msg.get("request_id", ""),
+                    "acknowledge_pane",
+                    True,
+                    pane_id=pane_id,
+                )
             elif msg_type == "submit_prompt":
                 await handle_submit_prompt_command(ws, msg)
             elif msg_type == "send_keys":

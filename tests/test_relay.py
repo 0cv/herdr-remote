@@ -99,6 +99,65 @@ class RelayHelpersTest(unittest.TestCase):
             self.assertEqual([entry["summary"] for entry in entries], ["Second", "Third"])
             self.assertEqual(activity_file.stat().st_mode & 0o777, 0o600)
 
+    def test_finished_agents_read_done_until_viewed(self):
+        pane = "w1:p1"
+        relay.unseen_done_panes.clear()
+        relay.acknowledged_done_panes.clear()
+        try:
+            relay.register_status_transition(pane, "working", None)
+            self.assertEqual(relay.displayed_status(pane, "working"), "working")
+
+            relay.register_status_transition(pane, "idle", "working")
+            self.assertEqual(relay.displayed_status(pane, "idle"), "done")
+
+            relay.unseen_done_panes.discard(pane)
+            relay.register_status_transition(pane, "idle", "idle")
+            self.assertEqual(relay.displayed_status(pane, "idle"), "idle")
+
+            relay.register_status_transition(pane, "idle", "working")
+            relay.register_status_transition(pane, "idle", "idle")
+            self.assertEqual(relay.displayed_status(pane, "idle"), "done")
+
+            relay.register_status_transition(pane, "idle", "done", focused=True)
+            self.assertEqual(relay.displayed_status(pane, "idle"), "idle")
+
+            relay.register_status_transition(pane, "blocked", "idle")
+            relay.register_status_transition(pane, "idle", "blocked")
+            self.assertEqual(relay.displayed_status(pane, "idle"), "done")
+        finally:
+            relay.unseen_done_panes.clear()
+            relay.acknowledged_done_panes.clear()
+
+    def test_raw_done_status_stays_idle_after_view_until_work_restarts(self):
+        pane = "w1:p1"
+        relay.unseen_done_panes.clear()
+        relay.acknowledged_done_panes.clear()
+        try:
+            relay.register_status_transition(pane, "working", "idle")
+            relay.register_status_transition(pane, "done", "working")
+            self.assertEqual(relay.displayed_status(pane, "done"), "done")
+
+            relay.acknowledged_done_panes.add(pane)
+            self.assertEqual(relay.displayed_status(pane, "done"), "idle")
+            self.assertEqual(relay.displayed_status(pane, "idle"), "idle")
+
+            relay.register_status_transition(pane, "working", "done")
+            relay.register_status_transition(pane, "done", "working")
+            self.assertEqual(relay.displayed_status(pane, "done"), "done")
+        finally:
+            relay.unseen_done_panes.clear()
+            relay.acknowledged_done_panes.clear()
+
+    def test_idle_at_startup_is_not_done(self):
+        relay.unseen_done_panes.clear()
+        relay.acknowledged_done_panes.clear()
+        try:
+            relay.register_status_transition("w2:p1", "idle", None)
+            self.assertEqual(relay.displayed_status("w2:p1", "idle"), "idle")
+        finally:
+            relay.unseen_done_panes.clear()
+            relay.acknowledged_done_panes.clear()
+
     def test_prune_uploads_removes_only_stale_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             upload_dir = Path(temp_dir)
@@ -291,6 +350,31 @@ class RelayHelpersTest(unittest.TestCase):
 
 
 class RelayCommandsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_viewing_done_pane_broadcasts_idle_immediately(self):
+        pane = "w1:p1"
+        relay.unseen_done_panes.add(pane)
+        relay.acknowledged_done_panes.discard(pane)
+        relay.agent_types[pane] = "codex"
+        try:
+            with patch.object(relay, "broadcast", AsyncMock()) as broadcast:
+                acknowledged = await relay.acknowledge_pane_viewed(pane)
+                repeated = await relay.acknowledge_pane_viewed(pane)
+                unknown = await relay.acknowledge_pane_viewed("missing:pane")
+        finally:
+            relay.unseen_done_panes.discard(pane)
+            relay.acknowledged_done_panes.discard(pane)
+            relay.agent_types.pop(pane, None)
+
+        self.assertTrue(acknowledged)
+        self.assertFalse(repeated)
+        self.assertFalse(unknown)
+        broadcast.assert_awaited_once_with({
+            "type": "agent_update",
+            "pane_id": pane,
+            "raw_pane_id": pane,
+            "status": "idle",
+        })
+
     async def test_claude_history_capture_reads_ansi_snapshot(self):
         relay.agent_types["w1:p1"] = "claude"
         relay.claude_history_state.clear()

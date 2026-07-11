@@ -2197,14 +2197,13 @@ function agentStatusGroup(agent) {
   if (status.includes('blocked')) return 'blocked';
   if (status.includes('working') || status.includes('running') || status.includes('progress') || status.includes('busy')) return 'working';
   if (
-    status === 'idle' ||
-    status === 'ready' ||
     status.includes('done') ||
     status.includes('complete') ||
     status.includes('finish') ||
     status.includes('success') ||
     status.includes('unread')
-  ) return 'ready';
+  ) return 'done';
+  if (status === 'idle' || status === 'ready') return 'ready';
   return 'other';
 }
 
@@ -2368,6 +2367,7 @@ function render() {
   const listView = document.getElementById('agentListView');
   const previousScrollTop = listView.scrollTop;
   const blocked = agents.filter(a => agentStatusGroup(a)==='blocked');
+  const done = agents.filter(a => agentStatusGroup(a)==='done');
   const working = agents.filter(a => agentStatusGroup(a)==='working');
   const ready = agents.filter(a => agentStatusGroup(a)==='ready');
   const other = agents.filter(a => agentStatusGroup(a)==='other');
@@ -2375,16 +2375,22 @@ function render() {
   document.getElementById('agentCount').textContent = agentCountLabel();
   let html = '';
   if (blocked.length) html += section('Blocked', 'var(--red)', blocked);
+  if (done.length) html += section('Done', 'var(--green)', done);
   if (working.length) html += section('Working', 'var(--yellow)', working);
-  if (ready.length) html += section('Ready', 'var(--green)', ready);
+  if (ready.length) html += section('Idle', 'var(--muted)', ready, true);
   if (other.length) html += section('Other', 'var(--muted)', other);
   if (!agents.length) html = relayConfigs.length ? '<div class="empty">Waiting for agents…</div>' : '';
   document.getElementById('agents').innerHTML = html;
   listView.scrollTop = previousScrollTop;
 }
 
-function section(title, color, list) {
-  return `<div class="section-header"><span class="dot" style="background:${color}"></span>${title}</div>` +
+function section(title, color, list, hollow = false) {
+  // Hollow mirrors herdr's own sidebar language: filled green = finished and
+  // not yet viewed, hollow outline = seen, nothing pending.
+  const dotStyle = hollow
+    ? `background:transparent;border:1.5px solid ${color};box-sizing:border-box`
+    : `background:${color}`;
+  return `<div class="section-header"><span class="dot" style="${dotStyle}"></span>${title}</div>` +
     sortedAgents(list).map(a => {
       const project = escapeHtml(displayName(a));
       const agent = escapeHtml(a.agent || 'agent');
@@ -2394,7 +2400,7 @@ function section(title, color, list) {
       const blockedDetails = blockedCardDetails(a, paneArg);
       const classes = agentStatusGroup(a) === 'blocked' ? 'agent blocked-agent' : 'agent';
       return `<div class="${classes}" onclick='openTerminal(${paneArg})'>
-        <span class="dot" style="background:${color}"></span>
+        <span class="dot" style="${dotStyle}"></span>
         <div class="info"><div class="project">${project}<span class="host-badge">@${host}</span></div><div class="meta">${agent} · ${status}</div>${blockedDetails}</div>
       </div>`;
     }).join('');
@@ -2416,6 +2422,15 @@ function blockedCardDetails(agent, paneArg) {
 }
 
 function openTerminal(paneId) {
+  const agent = agents.find(item => item.pane_id === paneId);
+  if (agent && agentStatusGroup(agent) === 'done') {
+    agent.status = 'idle';
+    lastAgentsSignature = agentsSignature(agents);
+    sendCommand(agent.relay_id, {
+      type: 'acknowledge_pane',
+      pane_id: agent.raw_pane_id,
+    }).catch(error => showToast(error.message, true));
+  }
   navigateTo({view: 'terminal', paneId});
 }
 
