@@ -7,7 +7,7 @@ Approve [Herdr](https://herdr.dev) agents from your phone across multiple comput
 Herdr Mobile Relay runs a small local relay on each computer, exposes each relay through its own Cloudflare Tunnel hostname, and lets one static web app connect to all of them. The phone UI merges agents from every configured relay, so you can approve or inspect agents running on a Mac, a Fedora workstation, or any other supported machine without making those computers connect to each other.
 
 > [!IMPORTANT]
-> Herdr Mobile Relay currently supports only Linux and macOS. Windows is not supported.
+> Herdr Mobile Relay currently supports Linux and macOS. Native Windows is not supported. It may work inside WSL2 because that provides a Linux environment, but WSL2 has not been tested and is not currently an officially supported setup.
 
 ## [Quick Start: One Command](QUICKSTART.md)
 
@@ -95,7 +95,7 @@ Forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-re
 - It does not use SSH remotes or SSH fan-out.
 - It does not run a central hosted broker.
 - It does not require Telegram, a native iOS app, or a native macOS menu bar app.
-- It does not currently run on Windows.
+- It does not currently run natively on Windows. WSL2 may work but remains untested and unsupported.
 
 ## Components
 
@@ -109,7 +109,7 @@ Forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-re
 
 The one-command quick start needs only:
 
-- Linux or macOS; Windows is not currently supported
+- Linux or macOS; native Windows is not supported, and WSL2 remains untested
 - Git, Make, and `curl`
 
 With your confirmation, `make quick-start` installs missing [Herdr](https://herdr.dev/docs/install/), [uv](https://docs.astral.sh/uv/getting-started/installation/), and [`cloudflared`](https://developers.cloudflare.com/tunnel/downloads/) tools for your user account. `uv` also supplies Python when necessary.
