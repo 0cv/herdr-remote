@@ -181,7 +181,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
 
         self.assertFalse((root / "relay" / "herdr-plugin.toml").exists())
         self.assertIn('id = "herdr-mobile-relay.events"', manifest)
-        self.assertIn('version = "0.4.1"', manifest)
+        self.assertIn('version = "0.4.2"', manifest)
         self.assertIn('id = "setup"', manifest)
         self.assertIn('command = "herdr-mobile-relay.events.setup"', manifest)
         self.assertIn('command = ["bash", "relay/open-plugin-pane.sh", "setup"]', manifest)
@@ -314,7 +314,49 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         self.assertIn(".cache/herdr-mobile-relay/post-install.sh", nohup_args)
         self.assertNotIn(str(root), nohup_args)
         self.assertTrue(waiter_copy_exists)
-        self.assertIn("0.4.1", nohup_args)
+        self.assertIn("0.4.2", nohup_args)
+
+    def test_plugin_build_releases_captured_pipes_before_waiter_exits(self):
+        # Regression: herdr registers the plugin only after the install
+        # returns, and the install waits on the build's stdout/stderr. A
+        # waiter that inherits those pipes (e.g. via a `( cd .. && cmd & )`
+        # wrapper) deadlocks the flow until its own timeout. The build must
+        # return to a pipe-capturing parent immediately, with the waiter
+        # still running.
+        root = RELAY_PATH.parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            fake_uv = temp / "uv"
+            fake_uv.write_text("#!/bin/sh\nexit 0\n")
+            fake_uv.chmod(0o700)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{temp}:/usr/bin:/bin",
+                "HOME": str(temp),
+                "HERDR_PLUGIN_REGISTRY": str(temp / "never-written.json"),
+                "HERDR_POST_INSTALL_ATTEMPTS": "6",
+                "HERDR_POST_INSTALL_DELAY": "1",
+                "HERDR_POST_INSTALL_LOCK_DIR": str(temp / "lock"),
+            })
+
+            socket_reader, socket_writer = socket.socketpair()
+            with socket_reader, socket_writer:
+                env["HERDR_SOCKET_PATH"] = inherited_socket_path(socket_reader)
+                started = time.monotonic()
+                result = subprocess.run(
+                    ["/bin/sh", str(root / "relay" / "plugin-build.sh")],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    pass_fds=(socket_reader.fileno(),),
+                )
+                elapsed = time.monotonic() - started
+            # Give the detached waiter time to exit before temp cleanup.
+            time.sleep(0.2)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("setup will open automatically", result.stderr)
+        self.assertLess(elapsed, 4.0, "build held the installer's pipes for the waiter's lifetime")
 
     def test_post_install_opens_already_matching_registered_version(self):
         root = RELAY_PATH.parents[1]

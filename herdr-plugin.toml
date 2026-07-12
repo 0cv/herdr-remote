@@ -15,7 +15,7 @@
 
 id = "herdr-mobile-relay.events"
 name = "Herdr Mobile Relay"
-version = "0.4.1"
+version = "0.4.2"
 # Herdr 0.7.0 introduced manifest actions, managed panes, and plugin config dirs.
 min_herdr_version = "0.7.0"
 description = "Set up and run the phone relay, with fast local agent-status events"

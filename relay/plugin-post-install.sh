@@ -3,6 +3,10 @@
 # has rewritten its registry with this manifest version and setup action.
 set -eu
 
+# The inherited working directory is herdr's staging checkout, deleted right
+# after the build exits; leave it so child shells don't log getcwd errors.
+cd / 2>/dev/null || true
+
 PLUGIN_ID="herdr-mobile-relay.events"
 EXPECTED_VERSION="${1:-}"
 BUILD_PID="${2:-0}"
@@ -86,6 +90,8 @@ raise SystemExit(1)
 PY
 }
 
+echo "waiter: started for version $EXPECTED_VERSION (build pid $BUILD_PID)" >&2
+
 # Build must exit before Herdr can write the new registry entry.
 COUNT=0
 while [ "$BUILD_PID" -gt 0 ] 2>/dev/null && kill -0 "$BUILD_PID" 2>/dev/null && [ "$COUNT" -lt 10 ]; do
@@ -105,8 +111,10 @@ while [ "$COUNT" -lt "$ATTEMPTS" ]; do
 done
 
 if [ -z "$PLUGIN_ROOT" ]; then
+    echo "waiter: gave up after $ATTEMPTS attempts - registry never showed version $EXPECTED_VERSION with a setup action" >&2
     exit 0
 fi
+echo "waiter: registration found at $PLUGIN_ROOT after $COUNT attempt(s)" >&2
 
 if [ -S "$SOCKET_PATH" ] && [ -n "$HERDR_COMMAND" ]; then
     export HERDR_SOCKET_PATH="$SOCKET_PATH"
@@ -133,4 +141,5 @@ if [ -S "$SOCKET_PATH" ] && [ -n "$HERDR_COMMAND" ]; then
     done
 fi
 
+echo "waiter: opening a desktop terminal (herdr pane unavailable)" >&2
 "$PLUGIN_ROOT/relay/plugin-open-terminal.sh" "$PLUGIN_ROOT" || true

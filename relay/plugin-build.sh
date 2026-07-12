@@ -51,10 +51,13 @@ schedule_auto_setup() {
     # through the registry, never through its own path.
     cp "$SCRIPT_DIR/plugin-post-install.sh" "$LOG_DIR/post-install.sh"
     chmod 700 "$LOG_DIR/post-install.sh"
-    # cd: the inherited working directory is the staging checkout, which is
-    # about to vanish; a deleted cwd makes child shells log getcwd errors.
-    (cd "$LOG_DIR" && HERDR_SOCKET_PATH="$SOCKET_PATH" nohup sh "$LOG_DIR/post-install.sh" "$EXPECTED_VERSION" "$$" \
-        </dev/null >"$LOG_DIR/post-install.log" 2>&1 &)
+    # No cd/subshell wrapper here: `( cd ... && cmd & )` makes the shell hold
+    # the build's stdout/stderr in an intermediate subshell for the waiter's
+    # whole lifetime, which stalls `herdr plugin install` until the waiter
+    # times out — and registration happens only after the install returns.
+    # The waiter leaves the doomed staging cwd itself.
+    HERDR_SOCKET_PATH="$SOCKET_PATH" nohup sh "$LOG_DIR/post-install.sh" "$EXPECTED_VERSION" "$$" \
+        </dev/null >"$LOG_DIR/post-install.log" 2>&1 &
     echo "herdr-mobile-relay: setup will open automatically after registration." >&2
 }
 
