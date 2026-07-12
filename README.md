@@ -74,11 +74,11 @@ Forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-re
 
 **Plugin ID:** `herdr-mobile-relay.events`
 
-**Short description:** Approve Herdr agents from your phone across multiple computers.
+**Short description:** Approve and monitor Herdr agents remotely from your phone — a mobile web app for Android/iOS smartphones with push notifications, QR setup, and multi-computer relays.
 
-**Long description:** Run one local relay per computer, expose each relay through Cloudflare Tunnel, and manage all agents from one installable mobile web app. Herdr Mobile Relay keeps machines independent: there is no SSH fan-out, central broker, Telegram bot, or native mobile app to install. It adds multi-relay agent merging, actionable Web Push notifications, confirmed terminal and approval controls, remote agent lifecycle management, merged activity history, screenshot/photo upload, optional device unlock, and service installers for macOS and Linux.
+**Long description:** Remote-control Herdr from any smartphone. Run one local relay per computer, expose each relay through Cloudflare Tunnel, and approve, monitor, and manage all agents from one installable mobile web app (PWA) on Android or iOS. Herdr Mobile Relay keeps machines independent: there is no SSH fan-out, central broker, Telegram bot, or native mobile app to install. It adds multi-relay agent merging, actionable Web Push notifications, confirmed terminal and approval controls, remote agent lifecycle management, merged activity history, screenshot/photo upload, optional device unlock, and service installers for macOS and Linux.
 
-**Tags:** mobile, relay, cloudflare, multi-machine, approvals
+**Tags:** mobile, smartphone, phone, remote, approvals, monitoring, notifications, push, android, ios, pwa, qr, cloudflare, relay, multi-machine
 
 ## What It Does
 
