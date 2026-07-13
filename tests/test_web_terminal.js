@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const html = fs.readFileSync('web/index.html', 'utf8');
 assert.match(html, /\.term-content \{[^}]*padding: 10px 16px/);
 assert.match(html, /\.ansi-line \{[^}]*overflow: hidden/);
+assert.match(html, /\.composer-field\.awaiting-approval textarea \{[^}]*line-height: 42px;[^}]*text-align: center/);
 const colorsStart = html.indexOf('const ANSI_COLORS =');
 const colorsEnd = html.indexOf('\n};', colorsStart) + 3;
 const rendererStart = html.indexOf('function trimAnsiLineEnd');
@@ -149,7 +150,95 @@ assert.doesNotMatch(inlineWhite, /ansi-line-background/);
 // unconditional rebuilds at polling frequency flicker the approval buttons
 // and cancel Android's keyboard suggestion session while it initialises.
 assert.match(html, /function updateTerminalContent[\s\S]*?if \(displayContent === lastTerminalDisplayContent && format === lastTerminalFormat\) return;/);
+assert.match(html, /function updateTerminalContent[\s\S]*?if \(composerHasFocus\(\)\)[\s\S]*?pendingTerminalFrame[\s\S]*?return;/);
 assert.match(html, /function syncTerminalChrome[\s\S]*?if \(signature !== lastTerminalChrome\)/);
+assert.match(html, /termInput'\)\.addEventListener\('blur', handleComposerBlur\)/);
+
+// A genuinely changing frame must also leave the DOM untouched while the
+// Android IME owns the composer; only the newest frame needs to survive.
+const contentStart = html.indexOf('function updateTerminalContent');
+const contentEnd = html.indexOf('function terminalDisplayContent', contentStart);
+assert.ok(contentStart >= 0 && contentEnd > contentStart, 'terminal content updater not found');
+const terminalEl = {
+  scrollHeight: 100,
+  scrollTop: 50,
+  clientHeight: 50,
+  htmlWrites: 0,
+  set innerHTML(value) { this.rendered = value; this.htmlWrites += 1; },
+};
+let composerFocused = true;
+const contentSandbox = {
+  document: {getElementById: () => terminalEl},
+  composerHasFocus: () => composerFocused,
+  compactSeparatorLines: value => value,
+  terminalDisplayContent: value => value,
+  activeAgent: () => ({agent: 'codex'}),
+  terminalHtml: value => value,
+  hideJumpToBottom: () => {},
+  showJumpToBottom: () => {},
+};
+vm.runInNewContext(`
+let activePane = 'relay::w1:p1';
+let pendingTerminalFrame = null;
+let lastTerminalDisplayContent = '';
+let lastTerminalFormat = '';
+${html.slice(contentStart, contentEnd)}
+this.updateTerminalContent = updateTerminalContent;
+this.pendingFrame = () => pendingTerminalFrame;
+`, contentSandbox);
+contentSandbox.updateTerminalContent('first live frame', 'ansi');
+contentSandbox.updateTerminalContent('newest live frame', 'ansi');
+assert.equal(terminalEl.htmlWrites, 0, 'focused composer must defer changing terminal frames');
+assert.equal(contentSandbox.pendingFrame().content, 'newest live frame');
+composerFocused = false;
+contentSandbox.updateTerminalContent(contentSandbox.pendingFrame().content, 'ansi');
+assert.equal(terminalEl.htmlWrites, 1);
+assert.equal(terminalEl.rendered, 'newest live frame');
+
+// A single contradictory polling snapshot must not clear controls installed
+// by an explicit blocked event. A second consecutive snapshot confirms the
+// transition, while a response initiated from the phone may clear at once.
+const mergeStart = html.indexOf('function mergeAgentList');
+const mergeEnd = html.indexOf('function removeAgentsForRelay', mergeStart);
+assert.ok(mergeStart >= 0 && mergeEnd > mergeStart, 'agent snapshot merge functions not found');
+assert.match(
+  html,
+  /msg\.type === 'agent_update'[\s\S]*?mergeAgentDetails\(a, stabilizeBlockedSnapshot\(a, next\)\)/,
+  'event updates must use the same blocked-state stabilization as polling snapshots',
+);
+const mergeSandbox = {};
+vm.runInNewContext(`
+let agents = [];
+let blockedSnapshotMisses = new Map();
+let respondingPaneIds = new Set();
+function agentStatusGroup(agent) { return agent && agent.status === 'blocked' ? 'blocked' : 'working'; }
+function agentUpdatedAt(agent) { return Number(agent && agent.updated_at || 0); }
+${html.slice(mergeStart, mergeEnd)}
+this.mergeAgentList = mergeAgentList;
+this.setAgents = value => { agents = value; };
+this.respondingPaneIds = respondingPaneIds;
+`, mergeSandbox);
+const blockedSnapshot = {
+  relay_id: 'relay',
+  pane_id: 'relay::w1:p1',
+  status: 'blocked',
+  prompt: 'Approval prompt',
+  command: 'touch marker',
+  options: ['yes', 'always', 'no'],
+};
+const workingSnapshot = {relay_id: 'relay', pane_id: 'relay::w1:p1', status: 'working'};
+mergeSandbox.setAgents([blockedSnapshot]);
+const firstNonBlocked = mergeSandbox.mergeAgentList('relay', [workingSnapshot])[0];
+assert.equal(firstNonBlocked.status, 'blocked');
+assert.equal(firstNonBlocked.command, 'touch marker');
+mergeSandbox.setAgents([firstNonBlocked]);
+const confirmedNonBlocked = mergeSandbox.mergeAgentList('relay', [workingSnapshot])[0];
+assert.equal(confirmedNonBlocked.status, 'working');
+
+mergeSandbox.setAgents([blockedSnapshot]);
+mergeSandbox.respondingPaneIds.add(blockedSnapshot.pane_id);
+const phoneResponse = mergeSandbox.mergeAgentList('relay', [workingSnapshot])[0];
+assert.equal(phoneResponse.status, 'working');
 
 // --- Behavioral: the quick-actions guard must keep identical button DOM
 // untouched, yet restore has-quick-actions after terminal navigation strips
@@ -236,13 +325,21 @@ const inputEl = {disabled: false, placeholder: 'Type…', value: ''};
 const sendEl = {disabled: true};
 const attachEl = {disabled: false};
 const fieldEl = {classes: new Set()};
-fieldEl.classList = {toggle: (name, force) => { if (force) fieldEl.classes.add(name); else fieldEl.classes.delete(name); }};
+fieldEl.classList = {
+  contains: name => fieldEl.classes.has(name),
+  toggle: (name, force) => { if (force) fieldEl.classes.add(name); else fieldEl.classes.delete(name); },
+};
 let composerAgent = {pane_id: 'r::w1:p1', status: 'blocked'};
+const composerDocument = {
+  activeElement: inputEl,
+  getElementById: id => ({termInput: inputEl, sendButton: sendEl, attachButton: attachEl, composerField: fieldEl}[id]),
+};
 const composerSandbox = {
-  document: {getElementById: (id) => ({termInput: inputEl, sendButton: sendEl, attachButton: attachEl, composerField: fieldEl}[id])},
+  document: composerDocument,
   activeAgent: () => composerAgent,
   agentStatusGroup: (agent) => agent.status,
   composerPromptText: (input) => input.value,
+  composerHasFocus: () => composerDocument.activeElement === inputEl,
 };
 vm.runInNewContext(`
 ${html.slice(composerStart, composerEnd)}
@@ -250,15 +347,21 @@ this.updateComposerState = updateComposerState;
 `, composerSandbox);
 
 composerSandbox.updateComposerState();
-assert.equal(inputEl.disabled, true, 'composer must lock while blocked');
+assert.equal(inputEl.disabled, false, 'approval must not disable a focused composer or reset its IME');
 assert.equal(attachEl.disabled, true);
 assert.equal(sendEl.disabled, true);
 assert.match(inputEl.placeholder, /approval/i);
+
+composerDocument.activeElement = null;
+composerSandbox.updateComposerState();
+assert.equal(inputEl.disabled, true, 'composer may lock after the keyboard releases it');
+assert.ok(fieldEl.classes.has('awaiting-approval'));
 
 composerAgent = {pane_id: 'r::w1:p1', status: 'working'};
 inputEl.value = 'hello';
 composerSandbox.updateComposerState();
 assert.equal(inputEl.disabled, false, 'composer must unlock when no longer blocked');
+assert.ok(!fieldEl.classes.has('awaiting-approval'));
 assert.equal(attachEl.disabled, false);
 assert.equal(sendEl.disabled, false);
 assert.equal(inputEl.placeholder, 'Type…');

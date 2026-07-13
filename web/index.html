@@ -184,6 +184,7 @@ body[data-view="terminal"] #manageButton { display: block; }
 .term-input .send-btn:disabled { opacity: 0.35; filter: grayscale(1); cursor: default; }
 .term-input .attach-btn:disabled { opacity: 0.35; cursor: default; }
 .term-input textarea:disabled { opacity: 0.5; }
+.composer-field.awaiting-approval textarea { height: 44px !important; min-height: 44px; max-height: 44px; padding: 0 8px; overflow: hidden; font-size: 12px; line-height: 42px; text-align: center; white-space: nowrap; }
 .composer-field .input-clear-btn { display: none; position: absolute; right: 4px; bottom: 4px; width: 32px; min-height: 36px; border-radius: 6px; font-size: 1rem; }
 .composer-field.has-text .input-clear-btn { display: flex; }
 .upload-status { display: none; padding: 5px 12px; border-top: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 0.65rem; line-height: 1.25; flex-shrink: 0; }
@@ -447,6 +448,7 @@ importQuickSetup();
 let securityLocked = false, unlockInProgress = false, pendingConnectAll = false;
 let lastBlockedPaneIds = new Set();
 let respondingPaneIds = new Set();
+let blockedSnapshotMisses = new Map();
 let serviceWorkerRegistration = null;
 let pushServiceWorkerRegistrations = new Map();
 let notificationSyncing = false;
@@ -458,6 +460,7 @@ let activities = [];
 let uploadStatusTimer = null;
 let toastTimer = null;
 let lastTerminalDisplayContent = '';
+let pendingTerminalFrame = null;
 
 // Settings
 const savedTheme = localStorage.getItem('herdr_theme') || 'nord';
@@ -1588,6 +1591,7 @@ function connectAll() {
   for (const id of [...connections.keys()]) disconnectRelay(id);
   connections.clear();
   agents = [];
+  blockedSnapshotMisses.clear();
   lastAgentsSignature = '';
   if (!relayConfigs.length) {
     updateStatusDot();
@@ -1734,6 +1738,7 @@ function handleMessage(relayId, msg) {
   }
   else if (msg.type === 'blocked') {
     const next = normalizeAgent(relayId, {...msg, status: 'blocked'});
+    blockedSnapshotMisses.delete(next.pane_id);
     const a = agents.find(x => x.pane_id === next.pane_id);
     if (a) Object.assign(a, mergeAgentDetails(a, {...next, prompt: msg.prompt, command: msg.command, options: msg.options}));
     else agents.push(next);
@@ -1745,7 +1750,7 @@ function handleMessage(relayId, msg) {
   } else if (msg.type === 'agent_update' && msg.pane_id) {
     const next = normalizeAgent(relayId, msg);
     const a = agents.find(x => x.pane_id === next.pane_id);
-    if (a) Object.assign(a, mergeAgentDetails(a, next));
+    if (a) Object.assign(a, mergeAgentDetails(a, stabilizeBlockedSnapshot(a, next)));
     else agents.push(next);
     reconcileRespondingPanes();
     lastAgentsSignature = agentsSignature(agents);
@@ -1778,9 +1783,37 @@ function mergeAgentList(relayId, nextAgents) {
   const retained = agents.filter(a => a.relay_id !== relayId);
   const merged = nextAgents.map(next => {
     const previous = previousById.get(next.pane_id);
-    return mergeAgentDetails(previous, next);
+    return mergeAgentDetails(previous, stabilizeBlockedSnapshot(previous, next));
   });
+  const livePaneIds = new Set(nextAgents.map(agent => agent.pane_id));
+  for (const paneId of blockedSnapshotMisses.keys()) {
+    if (paneId.startsWith(`${relayId}::`) && !livePaneIds.has(paneId)) blockedSnapshotMisses.delete(paneId);
+  }
   return retained.concat(merged);
+}
+
+function stabilizeBlockedSnapshot(previous, next) {
+  const paneId = next && next.pane_id;
+  if (!paneId || agentStatusGroup(next) === 'blocked') {
+    if (paneId) blockedSnapshotMisses.delete(paneId);
+    return next;
+  }
+  if (!previous || agentStatusGroup(previous) !== 'blocked' || respondingPaneIds.has(paneId)) {
+    blockedSnapshotMisses.delete(paneId);
+    return next;
+  }
+
+  // Herdr can briefly emit working between its explicit blocked event and the
+  // next pane snapshot. Apply the same confirmation rule to event updates and
+  // polling snapshots: one miss must not make approval controls flicker; two
+  // consecutive non-blocked observations are enough to confirm a real exit.
+  const misses = (blockedSnapshotMisses.get(paneId) || 0) + 1;
+  if (misses >= 2) {
+    blockedSnapshotMisses.delete(paneId);
+    return next;
+  }
+  blockedSnapshotMisses.set(paneId, misses);
+  return {...next, status: previous.status};
 }
 
 function mergeAgentDetails(previous, next) {
@@ -1803,6 +1836,9 @@ function mergeAgentDetails(previous, next) {
 function removeAgentsForRelay(relayId) {
   const active = activePaneTarget();
   agents = agents.filter(a => a.relay_id !== relayId);
+  for (const paneId of blockedSnapshotMisses.keys()) {
+    if (paneId.startsWith(`${relayId}::`)) blockedSnapshotMisses.delete(paneId);
+  }
   lastAgentsSignature = agentsSignature(agents);
   render();
   if (currentView === 'terminal' && active && active.relay_id === relayId) syncTerminalChrome(null);
@@ -1816,6 +1852,13 @@ function agentsSignature(list) {
 }
 
 function updateTerminalContent(content, format) {
+  if (composerHasFocus()) {
+    // Replacing the terminal beside a focused textarea can reset Android's
+    // active IME session. Keep only the newest frame until the keyboard closes.
+    pendingTerminalFrame = {paneId: activePane, content, format};
+    return;
+  }
+  pendingTerminalFrame = null;
   const term = document.getElementById('termContent');
   const displayContent = compactSeparatorLines(terminalDisplayContent(content));
   // Identical frames must not touch the DOM: rebuilding innerHTML at polling
@@ -2487,6 +2530,7 @@ function openTerminal(paneId) {
 
 function showTerminalView(paneId) {
   activePane = paneId;
+  pendingTerminalFrame = null;
   lastInsertedBackspaces = 0;
   lastTerminalDisplayContent = '';
   lastTerminalFormat = '';
@@ -3240,11 +3284,24 @@ function refreshPane() { sendToActive({type:'read_pane',lines:TERMINAL_HISTORY_L
 function composerPromptText(input) {
   return String(input && input.value || '').replace(/[\r\n]+$/g, '');
 }
+function composerHasFocus(){
+  const i=document.getElementById('termInput');
+  return Boolean(i&&document.activeElement===i);
+}
+function handleComposerBlur(){
+  const frame=pendingTerminalFrame;
+  pendingTerminalFrame=null;
+  if(frame&&currentView==='terminal'&&frame.paneId===activePane){
+    updateTerminalContent(frame.content,frame.format);
+  }
+  updateComposerState();
+}
 async function sendText() {
   const i=document.getElementById('termInput');
   const text=composerPromptText(i);
   const target=activePaneTarget();
-  if(!text||!target)return;
+  const agent=activeAgent();
+  if(!text||!target||(agent&&agentStatusGroup(agent)==='blocked'))return;
   i.value=''; handleComposerInput();
   try {
     await sendCommandToTarget(target,{type:'submit_prompt',text});
@@ -3279,13 +3336,18 @@ function updateComposerState(){
   const awaitingApproval=Boolean(agent&&agentStatusGroup(agent)==='blocked');
   const hasText=Boolean(composerPromptText(i));
   if(i){
-    if(i.disabled!==awaitingApproval) i.disabled=awaitingApproval;
-    const placeholder=awaitingApproval?'Waiting for approval — use the buttons':'Type…';
+    // Never disable the focused field: doing so tears down Gboard's current
+    // autocorrection session. Sending remains locked until approval is done.
+    const disableInput=awaitingApproval&&!composerHasFocus();
+    if(i.disabled!==disableInput) i.disabled=disableInput;
+    const placeholder=awaitingApproval?'Approval pending — use buttons':'Type…';
     if(i.placeholder!==placeholder) i.placeholder=placeholder;
+    if(field&&field.classList.contains('awaiting-approval')!==disableInput) field.classList.toggle('awaiting-approval',disableInput);
   }
-  if(send) send.disabled=!hasText||awaitingApproval;
-  if(attach) attach.disabled=awaitingApproval;
-  if(field) field.classList.toggle('has-text', hasText);
+  const disableSend=!hasText||awaitingApproval;
+  if(send&&send.disabled!==disableSend) send.disabled=disableSend;
+  if(attach&&attach.disabled!==awaitingApproval) attach.disabled=awaitingApproval;
+  if(field&&field.classList.contains('has-text')!==hasText) field.classList.toggle('has-text',hasText);
 }
 function sendKey(k){
   const target=activePaneTarget();
@@ -3354,6 +3416,7 @@ function respondForPane(paneId,index,total){
 document.addEventListener('click', hideArrows);
 document.getElementById('termInput').addEventListener('paste', handleComposerPaste);
 document.getElementById('termInput').addEventListener('keydown', handleComposerKeyDown);
+document.getElementById('termInput').addEventListener('blur', handleComposerBlur);
 document.getElementById('termContent').addEventListener('scroll', handleTerminalScroll);
 window.addEventListener('resize', updateBottomChromeHeight);
 
