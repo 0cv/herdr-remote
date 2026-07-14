@@ -113,6 +113,89 @@ generate_token() {
     return 1
 }
 
+generate_instance_id() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 16
+        return
+    fi
+    if command -v uuidgen >/dev/null 2>&1; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+        return
+    fi
+    echo "Cannot generate a relay instance ID: install openssl or uuidgen." >&2
+    return 1
+}
+
+env_file_value() {
+    local env_file="$1"
+    local key="$2"
+
+    if [ ! -f "$env_file" ]; then
+        return
+    fi
+    (
+        set -a
+        # shellcheck source=/dev/null
+        . "$env_file"
+        set +a
+        printenv "$key" 2>/dev/null || true
+    )
+}
+
+set_env_value_atomic() {
+    local env_file="$1"
+    local key="$2"
+    local value="$3"
+    local directory
+    local temp_file
+
+    case "$value" in
+        *"'"*)
+            echo "Cannot write $key: single quotes are not supported in relay environment values." >&2
+            return 1
+            ;;
+    esac
+
+    directory="$(dirname "$env_file")"
+    mkdir -p "$directory"
+    temp_file="$(mktemp "$directory/.relay-env.XXXXXX")"
+    if [ -f "$env_file" ]; then
+        grep -v "^${key}=" "$env_file" > "$temp_file" || true
+    fi
+    printf "%s='%s'\n" "$key" "$value" >> "$temp_file"
+    chmod 600 "$temp_file"
+    mv "$temp_file" "$env_file"
+}
+
+remove_env_value_if_equals_atomic() {
+    local env_file="$1"
+    local key="$2"
+    local expected="$3"
+    local current
+    local directory
+    local temp_file
+
+    if [ ! -f "$env_file" ]; then
+        return
+    fi
+    current="$(
+        set -a
+        # shellcheck source=/dev/null
+        . "$env_file"
+        set +a
+        printenv "$key" 2>/dev/null || true
+    )"
+    if [ "$current" != "$expected" ]; then
+        return
+    fi
+
+    directory="$(dirname "$env_file")"
+    temp_file="$(mktemp "$directory/.relay-env.XXXXXX")"
+    grep -v "^${key}=" "$env_file" > "$temp_file" || true
+    chmod 600 "$temp_file"
+    mv "$temp_file" "$env_file"
+}
+
 append_env_default() {
     local env_file="$1"
     local key="$2"
@@ -121,7 +204,7 @@ append_env_default() {
     if grep -q "^${key}=" "$env_file"; then
         return
     fi
-    printf '%s=%s\n' "$key" "$value" >> "$env_file"
+    set_env_value_atomic "$env_file" "$key" "$value"
 }
 
 ensure_relay_env() {
@@ -135,8 +218,11 @@ ensure_relay_env() {
     fi
 
     chmod 600 "$env_file"
-    if ! grep -q '^HERDR_RELAY_TOKEN=' "$env_file" || [ -z "$(sed -n 's/^HERDR_RELAY_TOKEN=//p' "$env_file" | tail -1)" ]; then
-        printf 'HERDR_RELAY_TOKEN=%s\n' "$(generate_token)" >> "$env_file"
+    if ! grep -q '^HERDR_RELAY_TOKEN=' "$env_file" || [ -z "$(env_file_value "$env_file" HERDR_RELAY_TOKEN)" ]; then
+        set_env_value_atomic "$env_file" HERDR_RELAY_TOKEN "$(generate_token)"
+    fi
+    if ! grep -q '^HERDR_RELAY_INSTANCE_ID=' "$env_file" || [ -z "$(env_file_value "$env_file" HERDR_RELAY_INSTANCE_ID)" ]; then
+        set_env_value_atomic "$env_file" HERDR_RELAY_INSTANCE_ID "$(generate_instance_id)"
     fi
     if [ -n "$cloudflared_config" ]; then
         append_env_default "$env_file" CLOUDFLARED_CONFIG "$cloudflared_config"
@@ -176,7 +262,7 @@ wait_for_relay_health() {
     for ((attempt = 1; attempt <= attempts; attempt++)); do
         if health="$(curl -fsS --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null)"; then
             case "$health" in
-                *'"status": "ok"'*'"version":'*'"protocol":'*)
+                *'"status": "ok"'*'"instance":'*'"version":'*'"protocol":'*)
                     printf '%s\n' "$health"
                     return 0
                     ;;

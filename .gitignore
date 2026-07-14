@@ -9,5 +9,7 @@ __pycache__/
 .env
 relay/.env
 relay/push/
+relay/cloudflared/
+relay/stable-setup.json
 .wrangler/
 .claude/

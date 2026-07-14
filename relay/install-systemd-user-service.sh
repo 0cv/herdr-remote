@@ -67,7 +67,8 @@ systemctl --user daemon-reload
 systemctl --user disable --now "$LEGACY_LABEL" >/dev/null 2>&1 || true
 rm -f "$LEGACY_UNIT_FILE"
 systemctl --user daemon-reload
-systemctl --user enable --now "$LABEL"
+systemctl --user enable "$LABEL"
+systemctl --user restart "$LABEL"
 
 echo "Installed and started $LABEL"
 echo "Unit: $UNIT_FILE"

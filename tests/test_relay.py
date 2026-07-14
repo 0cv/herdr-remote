@@ -96,6 +96,37 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         }
         self.assertEqual(keys, {"HERDR_RELAY_TOKEN", "CLOUDFLARED_CONFIG"})
 
+    def test_relay_env_generates_one_stable_internal_instance_id(self):
+        root = RELAY_PATH.parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / "relay.env"
+            env_file.write_text("HERDR_RELAY_INSTANCE_ID=''\n")
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        '. "$1"; ensure_relay_env "$2"; load_relay_env "$2"; '
+                        'first="$HERDR_RELAY_INSTANCE_ID"; ensure_relay_env "$2"; '
+                        'unset HERDR_RELAY_INSTANCE_ID; load_relay_env "$2"; '
+                        'printf "%s\\n%s\\n" "$first" "$HERDR_RELAY_INSTANCE_ID"'
+                    ),
+                    "bash",
+                    str(root / "relay" / "common.sh"),
+                    str(env_file),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            instance_ids = result.stdout.splitlines()[-2:]
+            mode = env_file.stat().st_mode & 0o777
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(instance_ids), 2)
+        self.assertTrue(instance_ids[0])
+        self.assertEqual(instance_ids[0], instance_ids[1])
+        self.assertEqual(mode, 0o600)
+
     def test_respond_keys_select_first_middle_and_last(self):
         self.assertEqual(relay.respond_keys(0, 3), ["Enter"])
         self.assertEqual(relay.respond_keys(1, 3), ["Down", "Enter"])
@@ -229,7 +260,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
 
         self.assertFalse((root / "relay" / "herdr-plugin.toml").exists())
         self.assertIn('id = "herdr-mobile-relay.events"', manifest)
-        self.assertIn('version = "0.4.2"', manifest)
+        self.assertIn('version = "0.5.0"', manifest)
         self.assertIn('id = "setup"', manifest)
         self.assertIn('command = "herdr-mobile-relay.events.setup"', manifest)
         self.assertIn('command = ["bash", "relay/open-plugin-pane.sh", "setup"]', manifest)
@@ -248,6 +279,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         self.assertIn('command = ["bash", "relay/plugin-status.sh"]', manifest)
         plugin_installer = (root / "relay" / "plugin-install-service.sh").read_text()
         self.assertIn('. "$SCRIPT_DIR/common.sh"', plugin_installer)
+        self.assertIn('"$SCRIPT_DIR/stable-setup.sh"', plugin_installer)
 
     def test_plugin_build_soft_fails_without_uv_or_network(self):
         root = RELAY_PATH.parents[1]
@@ -362,7 +394,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         self.assertIn(".cache/herdr-mobile-relay/post-install.sh", nohup_args)
         self.assertNotIn(str(root), nohup_args)
         self.assertTrue(waiter_copy_exists)
-        self.assertIn("0.4.2", nohup_args)
+        self.assertIn("0.5.0", nohup_args)
 
     def test_plugin_build_releases_captured_pipes_before_waiter_exits(self):
         # Regression: herdr registers the plugin only after the install
@@ -413,7 +445,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
             registry = temp / "plugins.json"
             registry.write_text(json.dumps([{
                 "plugin_id": "herdr-mobile-relay.events",
-                "version": "0.4.0",
+                "version": "0.5.0",
                 "enabled": True,
                 "plugin_root": str(root),
                 "actions": [{"id": "setup"}],
@@ -438,7 +470,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
             with socket_reader, socket_writer:
                 env["HERDR_SOCKET_PATH"] = inherited_socket_path(socket_reader)
                 result = subprocess.run(
-                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.4.0", "0"],
+                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.0", "0"],
                     capture_output=True,
                     text=True,
                     env=env,
@@ -463,7 +495,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
             registry = temp / "plugins.json"
             registry.write_text(json.dumps([{
                 "plugin_id": "herdr-mobile-relay.events",
-                "version": "0.4.0",
+                "version": "0.5.0",
                 "enabled": True,
                 "plugin_root": str(root),
                 "actions": [{"id": "setup"}],
@@ -488,7 +520,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
             with socket_reader, socket_writer:
                 env["HERDR_SOCKET_PATH"] = inherited_socket_path(socket_reader)
                 result = subprocess.run(
-                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.4.0", "0"],
+                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.0", "0"],
                     capture_output=True,
                     text=True,
                     env=env,
@@ -538,7 +570,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
             })
 
             result = subprocess.run(
-                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.4.0", "0"],
+                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.0", "0"],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -562,7 +594,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
             })
 
             result = subprocess.run(
-                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.4.0", "0"],
+                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.0", "0"],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -611,7 +643,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
                 "count=$((count + 1))\n"
                 "printf '%s\\n' \"$count\" > \"$COUNT_FILE\"\n"
                 "[ \"$count\" -ge 3 ] || exit 22\n"
-                "printf '%s\\n' '{\"status\": \"ok\", \"version\": \"abc1234\", \"protocol\": 1}'\n"
+                "printf '%s\\n' '{\"status\": \"ok\", \"instance\": \"instance-a\", \"version\": \"abc1234\", \"protocol\": 1}'\n"
             )
             fake_curl.chmod(0o700)
             env = os.environ.copy()
@@ -639,7 +671,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         self.assertEqual(call_count, "3")
         self.assertEqual(
             result.stdout.strip(),
-            '{"status": "ok", "version": "abc1234", "protocol": 1}',
+            '{"status": "ok", "instance": "instance-a", "version": "abc1234", "protocol": 1}',
         )
 
     def test_relay_health_check_rejects_incomplete_payload(self):
@@ -674,6 +706,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
 
         self.assertIn('wait_for_relay_health "$PORT"', macos)
         self.assertIn('wait_for_relay_health "$PORT"', linux)
+        self.assertIn('systemctl --user restart "$LABEL"', linux)
         self.assertIn("launchctl print", macos)
         self.assertIn("journalctl --user", linux)
 
@@ -1587,6 +1620,7 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         health = await relay.process_request(None, FakeRequest("/health"))
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.headers["Content-Type"], "text/plain; charset=utf-8")
+        self.assertEqual(health.headers["X-Herdr-Relay-Instance"], relay.RELAY_INSTANCE_ID)
         self.assertEqual(health.body, b"ok\n")
 
         healthz = await relay.process_request(None, FakeRequest("/healthz"))
@@ -1594,6 +1628,7 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(healthz.headers["Content-Type"], "application/json; charset=utf-8")
         payload = json.loads(healthz.body)
         self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["instance"], relay.RELAY_INSTANCE_ID)
         self.assertEqual(payload["protocol"], relay.PROTOCOL_VERSION)
         self.assertEqual(payload["version"], relay.RELAY_VERSION)
 

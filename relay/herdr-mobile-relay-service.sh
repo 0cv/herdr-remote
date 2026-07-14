@@ -39,7 +39,8 @@ if [ ! -r "$CLOUDFLARED_CONFIG" ]; then
 fi
 
 if [ -z "${HERDR_BIN:-}" ] && command -v herdr >/dev/null 2>&1; then
-    export HERDR_BIN="$(command -v herdr)"
+    HERDR_BIN="$(command -v herdr)"
+    export HERDR_BIN
 fi
 
 RELAY_PID=""

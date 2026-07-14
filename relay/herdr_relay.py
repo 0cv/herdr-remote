@@ -63,6 +63,7 @@ POLL_INTERVAL = float(os.environ.get("HERDR_RELAY_POLL_INTERVAL", "2"))
 IDLE_POLL_INTERVAL = max(POLL_INTERVAL, 15.0)
 PLUGIN_PORT = int(os.environ.get("HERDR_RELAY_PLUGIN_PORT", "8376"))
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for public/browser relay auth
+RELAY_INSTANCE_ID = os.environ.get("HERDR_RELAY_INSTANCE_ID", "")
 ALLOWED_ORIGINS = {
     origin.strip().rstrip("/")
     for origin in os.environ.get("HERDR_ALLOWED_ORIGINS", "").split(",")
@@ -1594,10 +1595,18 @@ async def process_request(connection, request):
 
     path = urllib.parse.urlsplit(request.path or "/").path
     if path == "/health":
-        headers = Headers([("Content-Type", "text/plain; charset=utf-8")])
+        headers = Headers([
+            ("Content-Type", "text/plain; charset=utf-8"),
+            ("X-Herdr-Relay-Instance", RELAY_INSTANCE_ID),
+        ])
         return Response(200, "OK", headers, b"ok\n")
     if path == "/healthz":
-        body = json.dumps({"status": "ok", "version": RELAY_VERSION, "protocol": PROTOCOL_VERSION}).encode() + b"\n"
+        body = json.dumps({
+            "status": "ok",
+            "instance": RELAY_INSTANCE_ID,
+            "version": RELAY_VERSION,
+            "protocol": PROTOCOL_VERSION,
+        }).encode() + b"\n"
         headers = Headers([("Content-Type", "application/json; charset=utf-8")])
         return Response(200, "OK", headers, body)
 

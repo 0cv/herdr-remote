@@ -20,14 +20,7 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 NEW_TOKEN="$(generate_token)"
-
-# Portable in-place edit (BSD and GNU sed disagree on -i): rewrite via a temp
-# file, keeping every non-token line.
-TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/herdr-env.XXXXXX")"
-grep -v '^HERDR_RELAY_TOKEN=' "$ENV_FILE" > "$TMP_FILE" || true
-printf 'HERDR_RELAY_TOKEN=%s\n' "$NEW_TOKEN" >> "$TMP_FILE"
-chmod 600 "$TMP_FILE"
-mv "$TMP_FILE" "$ENV_FILE"
+set_env_value_atomic "$ENV_FILE" HERDR_RELAY_TOKEN "$NEW_TOKEN"
 
 echo "✓ Wrote a new relay token to $ENV_FILE"
 echo "  Phones configured with the old token stop working once the relay restarts."

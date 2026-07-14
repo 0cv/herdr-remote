@@ -23,7 +23,7 @@ herdr plugin install 0cv/herdr-mobile-relay
 
 Herdr previews the plugin commands before you confirm the installation, including a one-time build step that installs `uv` (user-level) if missing and prepares the relay's Python environment. A failed download does not block plugin registration; Quick Start retries missing setup interactively.
 
-After registration, a setup menu opens automatically when the installer can identify an active Herdr session, Apple Terminal, Konsole, or GNOME Terminal reliably. Choose **Quick Start** for the beginner path, or **Stable Tunnel** for an existing named Cloudflare tunnel and background service.
+After registration, a setup menu opens automatically when the installer can identify an active Herdr session, Apple Terminal, Konsole, or GNOME Terminal reliably. Choose **Quick Start** for the beginner path, or **Stable Tunnel** for the guided permanent hostname, dedicated tunnel, and background service wizard.
 
 If no menu opens, invoke it explicitly:
 
@@ -115,21 +115,21 @@ TryCloudflare quick tunnels are intended for testing, have no uptime guarantee, 
    > [!TIP]
    > An available all-numeric `.xyz` domain with 6–9 digits typically costs about $1 per year through Cloudflare Registrar. The `.xyz` registry lists this numeric class at $0.99/year, and Cloudflare sells domains at registry cost without markup. Verify the current price at checkout.
 
-2. Follow the README's [Stable Hostnames](README.md#stable-hostnames) section once per computer.
-3. Invoke the service installer action; its managed pane installs the platform user service and prints the stable QR code:
+2. Choose **Stable Tunnel** from the plugin setup menu, or invoke its existing action directly:
 
 ```bash
 herdr plugin action invoke install-service --plugin herdr-mobile-relay.events
 ```
 
-For a local checkout, the equivalent commands are:
+For a local checkout, run:
 
 ```bash
-make service-install
-make setup-link
+make stable-setup
 ```
 
-This prints a QR code and setup link for the stable hostname; scanning it adds the relay to the app automatically.
+The stable wizard performs Cloudflare login when necessary, offers an editable `relay-<computer>.<domain>` hostname, creates or resumes the dedicated tunnel, installs the service, and verifies public DNS and HTTPS independently. It prints a QR only after the public relay identity matches the local service. If interrupted, rerun the exact command it prints; progress is resumable.
+
+Quick Start is not automatically promoted. Its random TryCloudflare hostname remains disposable until you explicitly run Stable Tunnel. To remove only resources recorded as wizard-owned, use `make stable-teardown`; see the README's [Stable Hostnames](README.md#stable-hostnames) section for login, conflict, timeout, custom-config, and teardown details.
 
 Repeat the relay setup on each Linux or macOS computer. You can add every stable relay to the same phone app; agents are merged client-side.
 

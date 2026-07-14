@@ -9,30 +9,18 @@ fi
 # shellcheck source=common.sh
 . "$SCRIPT_DIR/common.sh"
 
-echo "🐑 Herdr Mobile Relay background service setup"
+echo "🐑 Herdr Mobile Relay stable tunnel setup"
 echo ""
-echo "This requires a named Cloudflare tunnel configuration. If you only want"
-echo "to try the relay, run the Quick Start action instead:"
+echo "This wizard provisions or reuses a named Cloudflare tunnel, installs the"
+echo "background service, and verifies the public relay before showing its QR."
+echo "If you only want to try the relay, run Quick Start instead:"
 echo "  herdr plugin action invoke quick-start --plugin herdr-mobile-relay.events"
 echo ""
 
-if ! "$SCRIPT_DIR/setup.sh" --install-missing; then
-    pause_before_close
-    exit 1
-fi
-if ! "$SCRIPT_DIR/service.sh" install; then
+if ! "$SCRIPT_DIR/stable-setup.sh"; then
     echo ""
-    echo "The background service could not be installed or did not become healthy."
-    echo "Review the diagnostic commands above, then run this action again."
-    pause_before_close
-    exit 1
-fi
-
-echo ""
-if ! "$SCRIPT_DIR/setup-link.sh"; then
-    echo ""
-    echo "The service is running, but its public hostname could not be detected."
-    echo "Set CLOUDFLARED_CONFIG in the plugin relay.env and run this action again."
+    echo "Stable setup did not complete. Its state is resumable; use the exact"
+    echo "rerun command printed above after correcting the reported problem."
     pause_before_close
     exit 1
 fi

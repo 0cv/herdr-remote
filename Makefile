@@ -7,11 +7,13 @@ WEB_PROJECT ?= herdr-mobile-relay
 PATH := /opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$(HOME)/.local/bin:$(PATH)
 export PATH
 
-.PHONY: help setup setup-link rotate-token quick-start check test relay-run relay-plugin service-install service-uninstall service-status service-logs macos-service-install macos-service-uninstall macos-service-status macos-service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-deploy web-preview
+.PHONY: help setup setup-link rotate-token quick-start stable-setup stable-teardown check test relay-run relay-plugin service-install service-uninstall service-status service-logs macos-service-install macos-service-uninstall macos-service-status macos-service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-deploy web-preview
 
 help:
 	@echo "Common targets:"
 	@echo "  make quick-start                First run: install missing tools and start the phone app"
+	@echo "  make stable-setup               Provision/resume a stable tunnel, service, and verified QR"
+	@echo "  make stable-teardown            Remove only resources recorded by the stable wizard"
 	@echo "  make setup                      Prepare config and check prerequisites without installing"
 	@echo "  make web-deploy                 Deploy ./web to Cloudflare Pages (WEB_PROJECT=$(WEB_PROJECT))"
 	@echo "  make service-install            Install/start the relay service for this platform"
@@ -36,12 +38,19 @@ quick-start:
 	relay/setup.sh --install-missing
 	relay/start.sh
 
+stable-setup:
+	relay/stable-setup.sh
+
+stable-teardown:
+	relay/stable-teardown.sh
+
 check: test
 	uv run --with ruff ruff check relay tests
 	uv run python -m compileall -q relay tests
 	@for script in relay/*.sh; do bash -n "$$script" || exit; done
 	@for script in relay/plugin-build.sh relay/plugin-on-event.sh relay/plugin-post-install.sh; do sh -n "$$script" || exit; done
 	bash -n relay/plugin-setup-terminal.command
+	tests/test_stable_setup.sh
 	node --check web/sw.js
 	node --check web/notification-icons.js
 	node -e 'const fs=require("fs");const html=fs.readFileSync("web/index.html","utf8");const start=html.lastIndexOf("<script>");const end=html.indexOf("</script>",start);if(start<0||end<0)throw new Error("inline script not found");new Function(html.slice(start+8,end));'

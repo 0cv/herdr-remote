@@ -74,6 +74,8 @@ Forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-re
 
 **Plugin ID:** `herdr-mobile-relay.events`
 
+**Current version:** `0.5.0`
+
 **Short description:** Approve and monitor Herdr agents remotely from your phone — a mobile web app for Android/iOS smartphones with push notifications, QR setup, and multi-computer relays.
 
 **Long description:** Remote-control Herdr from any smartphone. Run one local relay per computer, expose each relay through Cloudflare Tunnel, and approve, monitor, and manage all agents from one installable mobile web app (PWA) on Android or iOS. Herdr Mobile Relay keeps machines independent: there is no SSH fan-out, central broker, Telegram bot, or native mobile app to install. It adds multi-relay agent merging, actionable Web Push notifications, confirmed terminal and approval controls, remote agent lifecycle management, merged activity history, screenshot/photo upload, optional device unlock, and service installers for macOS and Linux.
@@ -182,50 +184,71 @@ The relay automatically exposes installed Codex, Claude Code, and OpenCode execu
 
 ## Stable Hostnames
 
-For day-to-day use, create one named Cloudflare Tunnel and one DNS hostname per computer:
+For day-to-day use, run the stable setup wizard once on each computer. From the plugin setup menu, choose **Stable Tunnel**. From a local checkout, run:
 
 ```bash
-# On the Mac
-cloudflared tunnel login
-cloudflared tunnel create herdr-mobile-relay-mac
-cloudflared tunnel route dns herdr-mobile-relay-mac relay-mac.yourdomain.com
-
-# On Fedora
-cloudflared tunnel create herdr-mobile-relay-fedora
-cloudflared tunnel route dns herdr-mobile-relay-fedora relay-fedora.yourdomain.com
+make stable-setup
 ```
 
-Create `~/.cloudflared/config-herdr-mobile-relay.yml` on each computer. Example for the Mac:
+The wizard:
+
+1. Resolves the same persistent relay environment used by the service and refuses to modify a different checkout or plugin configuration.
+2. Reuses a valid `CLOUDFLARED_CONFIG` without changing it, or creates a dedicated `herdr-mobile-relay-<computer>` tunnel, credentials file, ingress config, and DNS route.
+3. Installs the macOS launchd or Linux user-systemd service.
+4. Waits up to 90 seconds for public DNS, then separately up to 60 seconds for `https://<hostname>/healthz`.
+5. Prints the phone setup link and QR code only when the public response has the same relay instance ID, version, and protocol as the local service.
+
+Cloudflare authorization happens in the foreground so its URL remains visible. On a desktop, `cloudflared` may open that URL in the browser. In a headless or remote shell, copy the exact URL it prints into a browser, authorize the intended zone, and return to the terminal. The domain entered in the wizard must belong to that selected zone.
+
+The default hostname is editable and follows `relay-<computer>.<domain>`. The wizard never passes `--overwrite-dns`: an unrelated record is a conflict, and you must choose a different hostname. A route that was created immediately before an interruption is recovered only after starting the recorded tunnel and proving that its public health identity matches the local relay.
+
+Immediately before creating a new tunnel, the wizard shows the exact tunnel name and DNS hostname and asks for confirmation. Unattended automation must opt in explicitly with `HERDR_STABLE_YES=1`. Existing-config reuse does not prompt, and once the tunnel exists an interrupted-setup resume does not prompt again or create a duplicate.
+
+Progress is stored atomically in a private `stable-setup.json` beside the resolved `relay.env` or `relay/.env`. Tunnel credentials and generated configuration are also private. If setup stops or times out, keep the state file and run the exact command printed by the wizard; it resumes the recorded tunnel instead of creating a duplicate. You can edit the hostname on a resumed run until DNS routing succeeds.
+
+Common failures are explicit:
+
+- **The domain must belong to the zone selected during login:** rerun the wizard after authorizing the correct Cloudflare zone. The original `cloudflared` error remains visible.
+- **The hostname already has a public DNS record:** choose another hostname or remove the unrelated record yourself; the wizard will not overwrite it.
+- **Public DNS timed out after 90 seconds:** DNS did not become visible through Cloudflare DNS-over-HTTPS. Cloudflare's resolver may still have the earlier negative result from the hostname conflict check cached, so the first 90-second wait can be tight. This is independent of the HTTPS wait; rerun the exact command and setup resumes safely.
+- **HTTPS health timed out after 60 seconds:** DNS is live, but the public tunnel did not serve the local relay in time. Identity mismatches name the differing health field, and no QR is printed.
+
+Quick Start remains a disposable TryCloudflare path. It is not automatically promoted to the stable tunnel; enter Stable Tunnel through the setup menu or run `make stable-setup` when you are ready.
+
+### Teardown
+
+For wizard-created resources, run:
+
+```bash
+make stable-teardown
+```
+
+Teardown requires the Herdr ownership marker and a `herdr-mobile-relay-` tunnel name. It shows the exact service, tunnel, hostname, config, and credentials before confirmation. It stops only a service installed by the wizard, deletes only its recorded tunnel and generated files, and never changes a custom Cloudflare config.
+
+`cloudflared` has no dependable DNS-route deletion command. After deleting the tunnel, teardown checks the hostname. If the record still resolves—or removal cannot be verified—it retains diagnostic state and prints the exact hostname plus Cloudflare dashboard DNS cleanup instructions instead of claiming success.
+
+### Existing or Custom Cloudflare Configuration
+
+If `CLOUDFLARED_CONFIG` already points to a readable config, `make stable-setup` leaves the file untouched. It validates ingress syntax, a readable credentials file, the tunnel identifier, the ingress hostname, and an origin matching `HERDR_RELAY_PORT`. When `cert.pem` or another origin certificate is available, it also confirms the tunnel still exists. A credentials-based config remains valid for running the tunnel when `cert.pem` is unavailable, so that management-only check is skipped rather than failing setup.
+
+Users who intentionally manage Cloudflare themselves can keep using the low-level path. Create the named tunnel, DNS record, credentials, and config manually, then install the service:
 
 ```yaml
-tunnel: herdr-mobile-relay-mac
-credentials-file: /Users/you/.cloudflared/<TUNNEL_ID>.json
+tunnel: herdr-mobile-relay-my-computer
+credentials-file: /absolute/path/to/<TUNNEL_ID>.json
 
 ingress:
-  - hostname: relay-mac.yourdomain.com
-    service: http://localhost:8375
+  - hostname: relay-my-computer.example.com
+    service: http://127.0.0.1:8375
   - service: http_status:404
 ```
 
-For Fedora:
-
-```yaml
-tunnel: herdr-mobile-relay-fedora
-credentials-file: /home/you/.cloudflared/<TUNNEL_ID>.json
-
-ingress:
-  - hostname: relay-fedora.yourdomain.com
-    service: http://localhost:8375
-  - service: http_status:404
-```
-
-Then add each relay to the phone the same way as the quick start — print its setup link and QR code on that computer:
-
 ```bash
-make setup-link
+make service-install
+make setup-link HOST=relay-my-computer.example.com
 ```
 
-For a local checkout, this reads the token from `relay/.env`. A marketplace install instead keeps `relay.env` in the stable directory printed by `herdr plugin config-dir herdr-mobile-relay.events`, so reinstalling the plugin does not erase its token. The hostname comes from the cloudflared config. Scanning the QR code (or opening the link) adds the relay to the app automatically. The relay and tunnel must be running. If the hostname cannot be detected, pass it explicitly with `make setup-link HOST=relay-mac.yourdomain.com`.
+`make service-install` remains intentionally low level: it requires an existing Cloudflare config, installs the platform service, and verifies only local health. Public DNS/HTTPS readiness and QR gating belong to `make stable-setup`.
 
 The setup link configures the app served at the relay's own hostname. If you installed the app from a separately hosted origin instead, add the relay in that app's Settings using the relay URLs:
 
@@ -249,7 +272,7 @@ make service-uninstall
 
 The older `make macos-service-*` and `make linux-service-*` targets remain available for explicit platform-specific use.
 
-Marketplace users do not need to find the managed checkout or run Make. After creating the named Cloudflare tunnel configuration, invoke the service installer action — its managed pane runs the same platform installer and prints the stable phone QR link:
+Marketplace users do not need to find the managed checkout or run Make. The existing Stable Tunnel action now opens the guided wizard:
 
 ```bash
 herdr plugin action invoke install-service --plugin herdr-mobile-relay.events
@@ -257,11 +280,11 @@ herdr plugin action invoke install-service --plugin herdr-mobile-relay.events
 
 Checkout `make setup-link` and `make rotate-token` commands manage checkout configuration only. They fail before reading or changing a token if the installed service is pinned to a different plugin-managed `relay.env`; use the matching Herdr plugin action or set `HERDR_RELAY_ENV` explicitly to that service configuration.
 
-Normal installs need only two values. Local checkouts store them in `relay/.env`; marketplace installs store them in `relay.env` under `herdr plugin config-dir herdr-mobile-relay.events`. Setup generates the token, and the stable service installer adds the tunnel path:
+Local checkouts store runtime values in `relay/.env`; marketplace installs use `relay.env` under `herdr plugin config-dir herdr-mobile-relay.events`. Setup generates the token and a private non-secret instance ID; the stable wizard also records the tunnel path. The instance ID is internal and intentionally omitted from `.env.example`.
 
 ```env
 HERDR_RELAY_TOKEN=<shared-secret>
-CLOUDFLARED_CONFIG=$HOME/.cloudflared/config-herdr-mobile-relay.yml
+CLOUDFLARED_CONFIG=/absolute/path/to/config.yml
 ```
 
 Read the token for the web app:
@@ -270,7 +293,7 @@ Read the token for the web app:
 sed -n 's/^HERDR_RELAY_TOKEN=//p' relay/.env
 ```
 
-New installs use `com.herdr-mobile-relay.service` on macOS and `herdr-mobile-relay.service` on Linux/Fedora. The installers remove the earlier `herdr-remote` service labels when they run. Existing ignored `relay/.env` files may still point at `config-herdr-remote.yml`; that is fine as long as the file exists, or you can update `CLOUDFLARED_CONFIG` to the new `config-herdr-mobile-relay.yml` path.
+New installs use `com.herdr-mobile-relay.service` on macOS and `herdr-mobile-relay.service` on Linux/Fedora. The installers remove the earlier `herdr-remote` service labels when they run. Existing ignored `relay/.env` files may still point at `config-herdr-remote.yml`; the wizard reuses it when it passes current validation.
 
 ## Token Auth
 
@@ -332,7 +355,7 @@ The repository-root `herdr-plugin.toml` declares Quick Start, background-service
 
 ## Health and Versions
 
-`GET /health` keeps the original plain-text `ok` response for existing uptime checks. `GET /healthz` returns `{"status": "ok", "version": "<git-hash>[-dirty]", "protocol": <n>}` without authentication for detailed monitoring. The relay also prints its version at startup and reports it to the app, which shows it per relay in Settings. When a relay and the app speak different protocol versions, Settings shows an update warning and blocks incompatible control commands.
+`GET /health` keeps the original plain-text `ok` body for existing uptime checks and adds the relay instance in the `X-Herdr-Relay-Instance` header. `GET /healthz` returns `{"status": "ok", "instance": "<non-secret-id>", "version": "<git-hash>[-dirty]", "protocol": <n>}` without authentication for detailed monitoring. The stable wizard compares all four fields with the local service before printing a QR. The relay also prints its version at startup and reports it to the app, which shows it per relay in Settings. When a relay and the app speak different protocol versions, Settings shows an update warning and blocks incompatible control commands.
 
 Uploaded images in `~/.cache/herdr-mobile-relay/uploads` are pruned automatically after 7 days.
 

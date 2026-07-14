@@ -15,7 +15,7 @@
 
 id = "herdr-mobile-relay.events"
 name = "Herdr Mobile Relay"
-version = "0.4.2"
+version = "0.5.0"
 # Herdr 0.7.0 introduced manifest actions, managed panes, and plugin config dirs.
 min_herdr_version = "0.7.0"
 description = "Remote mobile control for Herdr: approve and monitor agents from your smartphone (Android/iOS) with an installable web app, push notifications, QR pairing, and per-computer Cloudflare tunnels"
@@ -47,12 +47,12 @@ id = "quick-start"
 title = "Herdr Mobile Relay: Quick Start"
 command = ["bash", "relay/open-plugin-pane.sh", "quick-start"]
 
-# install-service — the permanent path: installs the platform background
-# service (requires a named Cloudflare tunnel, see the README's Stable
-# Hostnames section) and prints the stable setup QR code.
+# install-service — the permanent path: provisions or resumes a dedicated
+# named Cloudflare tunnel, installs the service, verifies public relay identity,
+# and only then prints the stable setup QR code.
 [[actions]]
 id = "install-service"
-title = "Herdr Mobile Relay: Install Background Service"
+title = "Herdr Mobile Relay: Stable Tunnel Setup"
 command = ["bash", "relay/open-plugin-pane.sh", "install-service"]
 
 # status — a smoke test for support: shows the resolved config, background
@@ -78,7 +78,7 @@ command = ["bash", "relay/plugin-quick-start.sh"]
 
 [[panes]]
 id = "install-service"
-title = "Herdr Mobile Relay: Install Background Service"
+title = "Herdr Mobile Relay: Stable Tunnel Setup"
 placement = "zoomed"
 command = ["bash", "relay/plugin-install-service.sh"]
 
