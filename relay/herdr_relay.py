@@ -91,8 +91,10 @@ UPLOAD_DIR = Path.home() / ".cache" / "herdr-mobile-relay" / "uploads"
 UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 UPLOAD_MAX_AGE_DAYS = 7
 WS_MAX_SIZE = max(16 * 1024 * 1024, UPLOAD_MAX_BYTES * 2 + 1024 * 1024)
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+DEFAULT_WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+WEB_DIR = Path(os.environ.get("HERDR_WEB_ROOT", DEFAULT_WEB_DIR)).expanduser().resolve()
 WEB_ASSET_CONTENT_TYPES = {
+    ".css": "text/css; charset=utf-8",
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
@@ -116,7 +118,7 @@ AGENT_PROFILE_CANDIDATES = {
 MACOS_PROTECTED_HOME_DIRECTORIES = {"Desktop", "Documents", "Downloads"}
 RELAY_CAPABILITIES = ["directory_browser", "structured_questions"]
 # Version 2 adds staged Claude Code question answers. Bump together with
-# APP_PROTOCOL_VERSION in web/index.html whenever mutations change incompatibly.
+# APP_PROTOCOL_VERSION in frontend/src/lib/protocol.ts whenever mutations change incompatibly.
 PROTOCOL_VERSION = 2
 MUTATING_MESSAGE_TYPES = frozenset({
     "answer_question",
@@ -231,6 +233,10 @@ CODEX_QUESTION_FOOTER_RE = re.compile(
     r"(?:tab to add notes|enter to submit (?:answer|all)|←/→ to navigate questions)",
     re.IGNORECASE,
 )
+CLAUDE_QUESTION_FOOTER_RE = re.compile(
+    r"\bEnter to select\b.*\bEsc to cancel\b",
+    re.IGNORECASE,
+)
 CODEX_NOTES_RE = re.compile(r"^\s*[❯›]\s*(?P<text>.+?)\s*$")
 ANSI_BACKGROUND_RE = re.compile(
     r"\x1b\[(?:\d+;)*48;(?:2;\d+;\d+;\d+|5;\d+)m"
@@ -238,6 +244,7 @@ ANSI_BACKGROUND_RE = re.compile(
 COMMAND_RE = re.compile(r"^\s*(?:[$>]|\u276f|\u203a)\s+(.+?)\s*$")
 
 clients = set()
+agent_refresh_clients = set()
 latest_agents_message = json.dumps(
     {"type": "agents", "agents": []},
     sort_keys=True,
@@ -245,6 +252,7 @@ latest_agents_message = json.dumps(
 )
 last_broadcast_agents_message = None
 last_statuses = {}
+blocked_agent_details = {}
 unseen_done_panes = set()
 acknowledged_done_panes = set()
 finished_notification_panes = set()
@@ -400,6 +408,9 @@ def register_finished_notification(pane_id, status, previous):
 
 async def acknowledge_pane_viewed(pane_id):
     if pane_id not in agent_types:
+        return False
+    current_status = last_statuses.get(pane_id)
+    if pane_id not in unseen_done_panes and not is_done_status(current_status):
         return False
     changed = pane_id in unseen_done_panes or pane_id not in acknowledged_done_panes
     unseen_done_panes.discard(pane_id)
@@ -750,18 +761,48 @@ def question_layout_hint(text):
     has_chat = bool(re.search(r"\bChat about this\b", clean, re.IGNORECASE))
     has_codex_header = any(CODEX_QUESTION_HEADER_RE.match(line) for line in lines)
     has_codex_footer = any(CODEX_QUESTION_FOOTER_RE.search(line) for line in lines)
-    return bool(
+    has_layout = bool(
         (has_checkbox and (has_submit or has_chat))
         or has_chat
         or (has_codex_header and has_codex_footer)
         or re.search(r"\bReview your answers\b", clean, re.IGNORECASE)
+    )
+    if not has_layout:
+        return False
+
+    layout_markers = [
+        index
+        for index, line in enumerate(lines)
+        if (
+            QUESTION_SUBMIT_RE.match(line)
+            or QUESTION_CHAT_RE.match(line)
+            or CODEX_QUESTION_FOOTER_RE.search(line)
+            or CLAUDE_QUESTION_FOOTER_RE.search(line)
+            or re.search(
+                r"\bReview your answers\b|\bSubmit answers\b|\bReady to submit your answers\?",
+                line,
+                re.IGNORECASE,
+            )
+        )
+    ]
+    if not layout_markers:
+        return False
+
+    # Question UI remains in recent terminal scrollback after it closes. Only
+    # treat it as live when its final control/footer is still at the pane tail;
+    # later plan output, approvals, or a shell prompt make the old form stale.
+    trailing = lines[layout_markers[-1] + 1:]
+    return not any(
+        line and not re.fullmatch(r"[\s─━═_—│|]+", line)
+        for line in trailing
     )
 
 
 def question_review_visible(text):
     clean = "\n".join(clean_pane_line(line) for line in str(text or "").splitlines())
     return bool(
-        re.search(r"\bReview your answers\b", clean, re.IGNORECASE)
+        question_layout_hint(text)
+        and re.search(r"\bReview your answers\b", clean, re.IGNORECASE)
         and re.search(r"\bSubmit answers\b|\bReady to submit your answers\?", clean, re.IGNORECASE)
     )
 
@@ -779,6 +820,58 @@ def question_can_go_back(text):
         prefix = re.sub(r"[←☐☒☑✓✔\s]+", "", prefix)
         return bool(re.search(r"[\w]", prefix, re.UNICODE))
     return False
+
+
+def question_has_next(text):
+    """Whether Claude's ANSI question header has a later question tab."""
+    for raw_line in str(text or "").splitlines():
+        clean = clean_pane_line(raw_line)
+        if "→" not in clean or "Submit" not in clean:
+            continue
+        active = ANSI_BACKGROUND_RE.search(raw_line)
+        if not active:
+            return False
+        tail = raw_line[active.end():]
+        end = re.search(r"\x1b\[(?:0|49)m", tail)
+        if not end:
+            return False
+        suffix = clean_pane_line(tail[end.end():])
+        suffix = re.sub(r"\bSubmit\b", "", suffix, flags=re.IGNORECASE)
+        suffix = re.sub(r"[←→☐☒☑✓✔\s]+", "", suffix)
+        return bool(re.search(r"[\w]", suffix, re.UNICODE))
+    return False
+
+
+def claude_question_position(text):
+    """Return the highlighted Claude question tab and total, when available."""
+    tab_marks = r"[☐☒☑✓✔]"
+    for raw_line in str(text or "").splitlines():
+        clean = clean_pane_line(raw_line)
+        if "→" not in clean or "Submit" not in clean:
+            continue
+        active = ANSI_BACKGROUND_RE.search(raw_line)
+        if not active:
+            return None
+        tail = raw_line[active.end():]
+        end = re.search(r"\x1b\[(?:0|49)m", tail)
+        if not end:
+            return None
+
+        submit = re.search(r"\bSubmit\b", clean, re.IGNORECASE)
+        if not submit:
+            return None
+        tabs = clean[:submit.start()]
+        tabs = re.sub(r"[✓✔]\s*$", "", tabs)
+        active_tab = clean_pane_line(tail[:end.start()])
+        prefix = clean_pane_line(raw_line[:active.start()])
+        current = len(re.findall(tab_marks, prefix)) + 1
+        total = len(re.findall(tab_marks, tabs))
+        if not re.search(tab_marks, active_tab):
+            total += 1
+        if current < 1 or total < current:
+            return None
+        return current, total
+    return None
 
 
 def question_description(lines, start, end):
@@ -836,16 +929,22 @@ def question_interaction_id(kind, question, options, submit_label):
 def public_question_interaction(interaction):
     if not interaction:
         return None
-    return {
+    public = {
         "id": interaction["id"],
         "kind": interaction["kind"],
         "question": interaction["question"],
         "options": interaction["options"],
         "other": interaction["other"],
         "submit_label": interaction["submit_label"],
-        "can_chat": interaction["can_chat"],
+        "can_chat": bool(interaction["can_chat"] and not interaction.get("other")),
         "can_go_back": bool(interaction.get("_can_go_back")),
     }
+    current = interaction.get("_question_index")
+    total = interaction.get("_question_total")
+    if type(current) is int and type(total) is int and 1 <= current <= total:
+        public["question_index"] = current
+        public["question_total"] = total
+    return public
 
 
 def codex_plain_line(line):
@@ -1042,6 +1141,8 @@ def parse_codex_question(text):
 
 
 def parse_question(text, agent_type=""):
+    if not question_layout_hint(text):
+        return None
     normalized = str(agent_type or "").lower()
     if "codex" in normalized:
         return parse_codex_question(text)
@@ -1062,6 +1163,14 @@ def parse_claude_question(text):
     intentionally removed before the interaction is sent to the browser.
     """
     can_go_back = question_can_go_back(text)
+    has_next = question_has_next(text)
+    position = claude_question_position(text)
+    position_fields = {}
+    if position:
+        position_fields = {
+            "_question_index": position[0],
+            "_question_total": position[1],
+        }
     lines = [clean_pane_line(line) for line in str(text or "").splitlines()]
     checkbox_rows = []
     for line_index, line in enumerate(lines):
@@ -1108,6 +1217,8 @@ def parse_claude_question(text):
             focus = ("chat", 0)
         question = question_prompt(lines, checkbox_rows[0][0])
         submit_label = submit_match.group("label").title() if submit_match else "Submit"
+        if submit_label == "Submit" and has_next:
+            submit_label = "Next"
         kind = "multi_select"
         return {
             "id": question_interaction_id(
@@ -1125,6 +1236,7 @@ def parse_claude_question(text):
             "_can_go_back": can_go_back,
             "_focus": focus or ("option", 0),
             "_all_option_count": len(all_options),
+            **position_fields,
         }
 
     if chat_match is None:
@@ -1151,11 +1263,13 @@ def parse_claude_question(text):
     focus = None
     for option_index, ((line_index, match), end_index) in enumerate(zip(plain_rows, row_ends)):
         label = compact_text(match.group(2), 500)
+        selected = bool(re.search(r"[✓✔]\s*$", label))
+        label = re.sub(r"\s*[✓✔]\s*$", "", label)
         all_options.append({
             "index": option_index,
             "label": label,
             "description": question_description(lines, line_index, end_index),
-            "selected": False,
+            "selected": selected,
         })
         if re.match(r"^\s*[❯›]", lines[line_index]):
             focus = ("option", option_index)
@@ -1167,19 +1281,21 @@ def parse_claude_question(text):
         focus = ("chat", 0)
     question = question_prompt(lines, plain_rows[0][0])
     kind = "single_select"
+    submit_label = "Next" if has_next else "Submit"
     return {
         "id": question_interaction_id(
-            kind, question, options, "",
+            kind, question, options, submit_label,
         ),
         "kind": kind,
         "question": question,
         "options": options,
-        "other": {"selected": bool(other_text), "text": other_text},
-        "submit_label": "",
+        "other": {"selected": other_item["selected"], "text": other_text},
+        "submit_label": submit_label,
         "can_chat": True,
         "_can_go_back": can_go_back,
         "_focus": focus or ("option", 0),
         "_all_option_count": len(all_options),
+        **position_fields,
     }
 
 
@@ -1786,6 +1902,7 @@ async def push_finished(agent):
 
 async def publish_blocked(blocked_msg):
     blocked_msg = dict(blocked_msg)
+    cache_blocked_agent_details(blocked_msg)
     blocked_msg.setdefault("event_id", secrets.token_urlsafe(12))
     activity = await publish_activity(
         "blocked",
@@ -1801,12 +1918,22 @@ async def publish_blocked(blocked_msg):
     asyncio.create_task(push_blocked(blocked_msg))
 
 
-async def publish_agent_blocked(agent):
-    pane_id = agent.get("pane_id", "")
-    raw_content = await asyncio.to_thread(read_question_pane, pane_id)
+def blocked_agent_details_for_content(agent, raw_content):
     interaction = parse_question(raw_content, agent.get("agent", ""))
     content = pane_summary(raw_content) or agent.get("prompt", "Agent is blocked")
     has_question_layout = question_layout_hint(raw_content)
+    return {
+        "prompt": content[:500],
+        "command": interaction["question"] if interaction else detect_command_context(content),
+        "options": [] if interaction or has_question_layout else detect_options(content) or TOOL_OPTIONS,
+        "interaction": public_question_interaction(interaction),
+        "question_layout": has_question_layout,
+    }
+
+
+async def publish_agent_blocked(agent):
+    pane_id = agent.get("pane_id", "")
+    raw_content = await asyncio.to_thread(read_question_pane, pane_id)
     await publish_blocked({
         "type": "blocked",
         "pane_id": pane_id,
@@ -1817,11 +1944,7 @@ async def publish_agent_blocked(agent):
         "tab_label": agent.get("tab_label", ""),
         "tab_number": agent.get("tab_number"),
         "workspace_id": agent.get("workspace_id", ""),
-        "prompt": content[:500],
-        "command": interaction["question"] if interaction else detect_command_context(content),
-        "options": [] if interaction or has_question_layout else detect_options(content) or TOOL_OPTIONS,
-        "interaction": public_question_interaction(interaction),
-        "question_layout": has_question_layout,
+        **blocked_agent_details_for_content(agent, raw_content),
     })
 
 
@@ -1865,6 +1988,63 @@ async def broadcast_serialized(data):
     clients.difference_update(dead)
 
 
+BLOCKED_AGENT_DETAIL_FIELDS = (
+    "prompt",
+    "command",
+    "options",
+    "interaction",
+    "question_layout",
+)
+
+
+def cache_blocked_agent_details(blocked_msg):
+    """Keep the current blocked controls available to reconnecting clients."""
+    global latest_agents_message
+    pane_id = blocked_msg.get("pane_id", "")
+    if not pane_id:
+        return
+    details = {
+        key: blocked_msg[key]
+        for key in BLOCKED_AGENT_DETAIL_FIELDS
+        if key in blocked_msg
+    }
+    if not details:
+        return
+    blocked_agent_details[pane_id] = {
+        **blocked_agent_details.get(pane_id, {}),
+        **details,
+    }
+    try:
+        current_agents = json.loads(latest_agents_message).get("agents", [])
+    except (AttributeError, json.JSONDecodeError):
+        return
+    latest_agents_message = agents_message(current_agents)
+
+
+def cache_question_interaction(agent, interaction):
+    public = public_question_interaction(interaction)
+    if not public:
+        return
+    cache_blocked_agent_details({
+        "pane_id": agent.get("pane_id", ""),
+        "prompt": public["question"],
+        "command": public["question"],
+        "options": [],
+        "interaction": public,
+        "question_layout": True,
+    })
+
+
+def prune_blocked_agent_details(agents):
+    live_blocked = {
+        agent.get("pane_id", "")
+        for agent in agents
+        if str(agent.get("status") or "").lower() == "blocked"
+    }
+    for pane_id in set(blocked_agent_details) - live_blocked:
+        blocked_agent_details.pop(pane_id, None)
+
+
 def agents_message(agents):
     """Serialize the exact authoritative payload sent to phone clients.
 
@@ -1872,7 +2052,13 @@ def agents_message(agents):
     stable pane id before comparing snapshots. Dict keys and separators are
     canonical too, making equality independent of construction order.
     """
-    ordered = sorted(agents, key=lambda agent: str(agent.get("pane_id", "")))
+    visible_agents = []
+    for agent in agents:
+        visible = dict(agent)
+        if str(visible.get("status") or "").lower() == "blocked":
+            visible.update(blocked_agent_details.get(visible.get("pane_id", ""), {}))
+        visible_agents.append(visible)
+    ordered = sorted(visible_agents, key=lambda agent: str(agent.get("pane_id", "")))
     return json.dumps(
         {"type": "agents", "agents": ordered},
         sort_keys=True,
@@ -1890,6 +2076,16 @@ async def broadcast_agents_if_changed(agents):
     last_broadcast_agents_message = message
     await broadcast_serialized(message)
     return True
+
+
+async def send_requested_agent_refreshes():
+    waiting = set(agent_refresh_clients)
+    agent_refresh_clients.difference_update(waiting)
+    for ws in waiting.intersection(clients):
+        try:
+            await ws.send(latest_agents_message)
+        except Exception:
+            clients.discard(ws)
 
 
 async def send_latest_agents(ws):
@@ -1959,7 +2155,9 @@ async def poll_loop():
         for pane_id in set(claude_history_capture_times) - live_pane_ids:
             claude_history_capture_times.pop(pane_id, None)
         claude_history_pending_captures.intersection_update(live_pane_ids)
+        prune_blocked_agent_details(agents)
         await broadcast_agents_if_changed(agents)
+        await send_requested_agent_refreshes()
         for agent in finished_agents:
             asyncio.create_task(push_finished(agent))
         for pane_id in set(last_statuses) - live_pane_ids:
@@ -2038,6 +2236,24 @@ def header_value(request, name):
     return None
 
 
+def asset_etag(body):
+    return f'"{hashlib.sha256(body).hexdigest()}"'
+
+
+def etag_matches(value, etag):
+    if not value:
+        return False
+    for candidate in value.split(","):
+        candidate = candidate.strip()
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:].lstrip()
+        if candidate == etag:
+            return True
+    return False
+
+
 def query_value(path, name):
     if "?" not in (path or ""):
         return None
@@ -2083,10 +2299,27 @@ def is_websocket_upgrade(request):
 
 
 def web_asset_path(request_path):
-    path = urllib.parse.urlsplit(request_path or "/").path
+    parsed = urllib.parse.urlsplit(request_path or "/")
+    if parsed.scheme or parsed.netloc:
+        return None
+    try:
+        path = urllib.parse.unquote(parsed.path, errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if path not in {"", "/"}:
+        if not path.startswith("/") or "\\" in path or "\x00" in path:
+            return None
+        segments = path[1:].split("/")
+        if any(segment in {"", ".", ".."} for segment in segments):
+            return None
     relative = "index.html" if path in {"", "/"} else path.lstrip("/")
     root_assets = {"index.html", "manifest.webmanifest", "notification-icons.js", "sw.js"}
-    if relative not in root_assets and not relative.startswith("icons/"):
+    compiled_assets = {"assets/app.js", "assets/app.css"}
+    if (
+        relative not in root_assets
+        and relative not in compiled_assets
+        and not relative.startswith("icons/")
+    ):
         return None
     try:
         asset = (WEB_DIR / relative).resolve()
@@ -2139,11 +2372,15 @@ async def process_request(connection, request):
         headers = Headers([("Content-Type", "text/plain; charset=utf-8")])
         return Response(404, "Not Found", headers, b"Not found\n")
     content_type = WEB_ASSET_CONTENT_TYPES.get(asset.suffix.lower(), "application/octet-stream")
+    etag = asset_etag(body)
     headers = Headers([
         ("Content-Type", content_type),
         ("Cache-Control", "no-cache"),
+        ("ETag", etag),
         ("X-Content-Type-Options", "nosniff"),
     ])
+    if etag_matches(header_value(request, "if-none-match"), etag):
+        return Response(304, "Not Modified", headers, b"")
     return Response(200, "OK", headers, body)
 
 
@@ -2203,32 +2440,109 @@ async def resolve_started_agent(data, name):
     return str(nested_value(current, "pane_id") or ""), str(nested_value(current, "workspace_id") or "")
 
 
-async def move_started_agent_to_new_tab(pane_id, workspace_id, label):
-    if not pane_id or not workspace_id:
+def select_workspace_for_cwd(cwd, pane_data, workspace_data):
+    panes = pane_data.get("panes", []) if isinstance(pane_data, dict) else []
+    workspaces = workspace_data.get("workspaces", []) if isinstance(workspace_data, dict) else []
+    target = Path(cwd).resolve()
+    counts = {}
+    for pane in panes:
+        if not isinstance(pane, dict):
+            continue
+        workspace_id = str(pane.get("workspace_id") or "")
+        if not workspace_id:
+            continue
+        summary = counts.setdefault(workspace_id, {"matching": 0, "total": 0})
+        summary["total"] += 1
+        try:
+            pane_cwd = Path(str(pane.get("cwd") or "")).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        if pane_cwd == target:
+            summary["matching"] += 1
+
+    candidates = {workspace_id for workspace_id, count in counts.items() if count["matching"]}
+    if not candidates:
+        return ""
+
+    expected_labels = {target.name}
+    try:
+        if target == Path.home().resolve():
+            expected_labels.add("~")
+    except OSError:
+        pass
+    labelled = [
+        str(workspace.get("workspace_id") or "")
+        for workspace in workspaces
+        if isinstance(workspace, dict)
+        and str(workspace.get("workspace_id") or "") in candidates
+        and str(workspace.get("label") or "") in expected_labels
+    ]
+    if len(labelled) == 1:
+        return labelled[0]
+
+    exclusive = [
+        workspace_id for workspace_id in candidates
+        if counts[workspace_id]["matching"] == counts[workspace_id]["total"]
+    ]
+    if len(exclusive) == 1:
+        return exclusive[0]
+
+    majority = [
+        workspace_id for workspace_id in candidates
+        if counts[workspace_id]["matching"] * 2 > counts[workspace_id]["total"]
+    ]
+    if len(majority) == 1:
+        return majority[0]
+    return ""
+
+
+async def workspace_id_for_cwd(cwd):
+    panes_ok, panes_output, _panes_error = await run_herdr_async_result("pane", "list")
+    workspaces_ok, workspaces_output, _workspaces_error = await run_herdr_async_result("workspace", "list")
+    panes = parsed_herdr_output(panes_output) if panes_ok else None
+    workspaces = parsed_herdr_output(workspaces_output) if workspaces_ok else None
+    return select_workspace_for_cwd(cwd, panes, workspaces)
+
+
+async def place_started_agent(pane_id, workspace_id, label, cwd):
+    if not pane_id:
         return False, None, "Started agent identity is incomplete"
-    ok, output, error = await run_herdr_async_result(
-        "pane", "move", pane_id,
-        "--new-tab", "--workspace", workspace_id,
-        "--label", label, "--no-focus",
-    )
+    if workspace_id:
+        args = (
+            "pane", "move", pane_id,
+            "--new-tab", "--workspace", workspace_id,
+            "--label", label, "--no-focus",
+        )
+    else:
+        workspace_label = Path(cwd).name or "workspace"
+        args = (
+            "pane", "move", pane_id,
+            "--new-workspace", "--label", workspace_label,
+            "--tab-label", label, "--no-focus",
+        )
+    ok, output, error = await run_herdr_async_result(*args)
     return ok, parsed_herdr_output(output), error
 
 
 async def start_agent_in_new_tab(profile, name, cwd):
-    ok, output, error = await run_herdr_async_result(
-        "agent", "start", name, "--cwd", str(cwd), "--no-focus", "--", *profile["argv"]
-    )
+    workspace_id = await workspace_id_for_cwd(cwd)
+    start_args = ["agent", "start", name, "--cwd", str(cwd)]
+    if workspace_id:
+        start_args.extend(("--workspace", workspace_id))
+    start_args.extend(("--no-focus", "--", *profile["argv"]))
+    ok, output, error = await run_herdr_async_result(*start_args)
     data = parsed_herdr_output(output)
     if not ok:
         return False, data, "", "", error
 
-    pane_id, workspace_id = await resolve_started_agent(data, name)
-    placed, placement, placement_error = await move_started_agent_to_new_tab(pane_id, workspace_id, name)
+    pane_id, _started_workspace_id = await resolve_started_agent(data, name)
+    placed, placement, placement_error = await place_started_agent(pane_id, workspace_id, name, cwd)
     if not placed:
         return True, data, pane_id, placement_error, ""
 
     data = {"agent": data, "placement": placement}
-    pane_id = str(nested_value(placement, "pane_id") or pane_id)
+    final_pane_id, _final_workspace_id = await resolve_started_agent(None, name)
+    pane_id = str(final_pane_id or nested_value(placement, "pane_id") or pane_id)
     return True, data, pane_id, "", ""
 
 
@@ -2600,8 +2914,15 @@ async def execute_question_answer(pane_id, interaction, selected, other_selected
         )
     if interaction["kind"] == "single_select":
         if selected:
+            latest = interaction
+            if latest.get("other", {}).get("text"):
+                latest, error = await set_question_other_text(
+                    pane_id, latest, ""
+                )
+                if error:
+                    return False, error
             _latest, error = await move_question_focus(
-                pane_id, interaction, ("option", selected[0])
+                pane_id, latest, ("option", selected[0])
             )
             if error:
                 return False, error
@@ -2666,6 +2987,7 @@ async def finish_question_command(ws, msg, agent, interaction):
         transition = "confirmed" if confirmed else "stuck"
 
     if transition == "advanced":
+        cache_question_interaction(agent, next_interaction)
         await complete_command(
             ws, request_id, "question", True, "Answered question",
             pane_id=pane_id, agent=agent.get("agent", ""),
@@ -2808,6 +3130,7 @@ async def handle_navigate_question_command(ws, msg):
             pane_id, interaction["id"]
         )
         if transition == "advanced" and previous_interaction:
+            cache_question_interaction(agent, previous_interaction)
             await complete_command(
                 ws, request_id, "question", True, "Opened previous question",
                 pane_id=pane_id, agent=agent.get("agent", ""),
@@ -3018,7 +3341,7 @@ async def handle_agent_start_command(ws, msg):
     ok, data, pane_id, placement_error, error = await start_agent_in_new_tab(profile, name, cwd)
     warnings = []
     if placement_error:
-        warnings.append(f"Agent started, but a dedicated tab could not be created: {placement_error}")
+        warnings.append(f"Agent started, but it could not be placed in the working-directory space: {placement_error}")
     if ok and prompt.strip():
         if pane_id:
             await asyncio.sleep(0.25)
@@ -3028,8 +3351,19 @@ async def handle_agent_start_command(ws, msg):
         else:
             warnings.append("Agent started, but its pane could not be found for the initial task")
     warning = "; ".join(warnings)
-    if isinstance(data, dict) and warning:
-        data = {**data, "warning": warning}
+    result_data = data
+    if pane_id:
+        result_data = {
+            **(data if isinstance(data, dict) else {"result": data}),
+            "pane_id": pane_id,
+            "name": name,
+            "cwd": str(cwd),
+        }
+    if warning:
+        result_data = {
+            **(result_data if isinstance(result_data, dict) else {"result": result_data}),
+            "warning": warning,
+        }
     await complete_command(
         ws,
         request_id,
@@ -3039,7 +3373,7 @@ async def handle_agent_start_command(ws, msg):
         error=error,
         agent=profile["label"],
         project=cwd.name,
-        data=data,
+        data=result_data,
         phase="completed_with_warning" if ok and warning else "completed",
         details=command_details(msg, {"profile": profile["label"], "cwd": str(cwd)}),
     )
@@ -3100,16 +3434,23 @@ async def handle_agent_clear_command(ws, msg):
     name = f"clear-{profile['id']}-{int(time.time()) % 100000}"
     ok, data, replacement_pane_id, placement_error, error = await start_agent_in_new_tab(profile, name, cwd)
     warning = ""
+    result_data = data
     if ok and placement_error:
         if replacement_pane_id:
             await run_herdr_async_result("pane", "close", replacement_pane_id)
         ok = False
-        error = f"Replacement could not be placed in a dedicated tab: {placement_error}"
+        error = f"Replacement could not be placed in the working-directory space: {placement_error}"
     elif ok:
+        result_data = {
+            **(data if isinstance(data, dict) else {"result": data}),
+            "pane_id": replacement_pane_id,
+            "name": name,
+            "cwd": str(cwd),
+        }
         close_ok, _close_output, close_error = await run_herdr_async_result("pane", "close", pane_id)
         if not close_ok:
             warning = f"Replacement started, but the old pane could not be closed: {close_error}"
-            data["warning"] = warning
+            result_data["warning"] = warning
     await complete_command(
         ws,
         request_id,
@@ -3121,7 +3462,7 @@ async def handle_agent_clear_command(ws, msg):
         agent=agent.get("agent", ""),
         project=agent.get("project", ""),
         phase="completed_with_warning" if ok and warning else "completed",
-        data=data,
+        data=result_data,
         details=command_details(msg, {"profile": profile["label"], "cwd": str(cwd)}),
     )
 
@@ -3221,6 +3562,11 @@ async def handle_client(ws):
                     "type": "activity_history",
                     "activities": await asyncio.to_thread(load_activity, msg.get("limit", ACTIVITY_MAX_ITEMS)),
                 })
+            elif msg_type == "refresh_agents":
+                cached_agents = json.loads(latest_agents_message)
+                if await safe_send_json(ws, cached_agents):
+                    agent_refresh_clients.add(ws)
+                    wake_poll_loop()
             elif msg_type == "read_pane":
                 pane_id = msg.get("pane_id")
                 if not pane_id:
@@ -3248,6 +3594,14 @@ async def handle_client(ws):
                 ):
                     question_content, interaction = await read_current_question(pane_id)
                 has_question_layout = question_layout_hint(question_content)
+                if last_statuses.get(pane_id) == "blocked":
+                    cache_blocked_agent_details({
+                        "pane_id": pane_id,
+                        **blocked_agent_details_for_content(
+                            {"agent": pane_agent_type},
+                            question_content,
+                        ),
+                    })
                 if fmt == "ansi" and "claude" in agent_types.get(pane_id, ""):
                     content = claude_content_for_client(
                         pane_id,
@@ -3336,6 +3690,7 @@ async def handle_client(ws):
         pass
     finally:
         clients.discard(ws)
+        agent_refresh_clients.discard(ws)
 
 
 class UDPPlugin(asyncio.DatagramProtocol):

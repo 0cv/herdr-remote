@@ -1,0 +1,193 @@
+import { describe, expect, it } from 'vitest';
+import { activityMatchesSearch } from '$lib/activity';
+import {
+  agentStatusTone,
+  agentUpdatedAt,
+  mergeAgentDetails,
+  mergeAgentList,
+  sortedAgents,
+} from '$lib/agents';
+import { APP_PROTOCOL_VERSION } from '$lib/config';
+import { quickSetupConfig } from '$lib/config';
+import { suggestedLaunchName } from '$lib/launch';
+import { parseNotificationTarget, relayProtocolError, relayVersionMeta } from '$lib/protocol';
+import { relayPushScope } from '$lib/push';
+import { stateFromLocation } from '$lib/router';
+import {
+  createQuestionDraft,
+  questionSubmitAllowed,
+  shouldRestoreQuestionDraft,
+  updateQuestionOption,
+  updateQuestionOther,
+} from '$lib/questions';
+import {
+  ansi256Color,
+  ansiToHtml,
+  lastCompletedResponse,
+  renderTerminalContent,
+  terminalHtml,
+} from '$lib/terminal';
+import type { Agent, QuestionInteraction, RelayConnectionView } from '$lib/types';
+
+function agent(overrides: Partial<Agent>): Agent {
+  return {
+    relay_id: 'relay', relay_label: 'Fedora', raw_pane_id: 'w1:p1', pane_id: 'relay::w1:p1', ...overrides,
+  };
+}
+
+describe('protocol and setup parsing', () => {
+  it('keeps protocol v2 mutation compatibility explicit', () => {
+    expect(APP_PROTOCOL_VERSION).toBe(2);
+    expect(relayProtocolError({ protocol: 2 } as RelayConnectionView)).toBe('');
+    expect(relayProtocolError({ protocol: 0 } as RelayConnectionView)).toMatch(/Waiting/);
+    expect(relayProtocolError({ protocol: 1 } as RelayConnectionView)).toMatch(/v1/);
+    expect(relayVersionMeta({ status: 'connected', protocol: 3, version: 'future' } as RelayConnectionView)?.label).toMatch(/App outdated/);
+  });
+
+  it('sanitizes setup links and notification routes', () => {
+    expect(quickSetupConfig({
+      hash: '#setup=0123456789abcdef0123456789abcdef&label=Fedora%20Workstation',
+      protocol: 'https:',
+      host: 'relay.example.com',
+    } as Location)).toEqual({
+      label: 'Fedora Workstation', url: 'wss://relay.example.com', token: '0123456789abcdef0123456789abcdef',
+    });
+    expect(quickSetupConfig({ hash: '#setup=short', protocol: 'https:', host: 'relay.example.com' } as Location)).toBeNull();
+    expect(quickSetupConfig({ hash: '#setup=0123456789abcdef', protocol: 'javascript:', host: 'bad' } as Location)).toBeNull();
+
+    const encoded = encodeURIComponent(JSON.stringify({ pane_id: 'w1:p1', host: 'Fedora', action: 'approve', index: 0, total: 3 }));
+    expect(parseNotificationTarget(encoded)).toMatchObject({ pane_id: 'w1:p1', action: 'approve', index: 0, total: 3 });
+    expect(parseNotificationTarget(encodeURIComponent(JSON.stringify({ pane_id: 'w1:p1', action: 'approve', index: 9, total: 3 })))).toBeNull();
+    expect(parseNotificationTarget('%not-json')).toBeNull();
+    expect(stateFromLocation({ hash: '#pane=%invalid' } as Location)).toEqual({ view: 'agents' });
+    expect(relayPushScope('UPPER-id-')).toBe('./push/upper-id/');
+    expect(relayPushScope('---')).toBe('./push/relay/');
+  });
+});
+
+describe('terminal rendering', () => {
+  it('renders ANSI locally and escapes relay-controlled HTML', () => {
+    expect(ansi256Color(6)).toBe('#1abc9c');
+    expect(ansi256Color(196)).toBe('rgb(255,0,0)');
+    expect(ansiToHtml('\x1b[38;5;6mSearch\x1b[0m')).toMatch(/color:#1abc9c/);
+    const html = terminalHtml('<img src=x onerror=alert(1)> \x1b[1mready\x1b[0m');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('font-weight:700');
+    expect(renderTerminalContent('<script>alert(1)</script>', 'plain', 'codex', true).html).toBe('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+
+  it('extracts the latest completed Codex and Claude responses', () => {
+    expect(lastCompletedResponse([
+      '• Earlier answer.', '─ Worked for 2s ─', '', '› New question', '', '• Latest answer.',
+      '  - First detail', '  - Second detail', '', '─ Worked for 8m 05s ─', '', '› Next question',
+    ].join('\n'))).toBe('Latest answer.\n- First detail\n- Second detail');
+    expect(lastCompletedResponse('● The implementation is ready.\n  It works.\n\n✻ Crunched for 1m 49s\n❯ '))
+      .toBe('The implementation is ready.\nIt works.');
+    expect(lastCompletedResponse('● Still working\n')).toBe('');
+  });
+});
+
+describe('agent state and sorting', () => {
+  it('maps active agent states to semantic indicator tones', () => {
+    expect(agentStatusTone(agent({ status: 'working' }))).toBe('warning');
+    expect(agentStatusTone(agent({ status: 'blocked' }))).toBe('danger');
+    expect(agentStatusTone(agent({ status: 'done' }))).toBe('success');
+    expect(agentStatusTone(agent({ status: 'idle' }))).toBe('muted');
+  });
+
+  it('sorts activity newest-first with stable host fallback', () => {
+    expect(agentUpdatedAt(agent({ updated_at: 'invalid' }))).toBe(0);
+    const sorted = sortedAgents([
+      agent({ pane_id: 'relay::old', raw_pane_id: 'old', updated_at: 1 }),
+      agent({ pane_id: 'relay::new', raw_pane_id: 'new', updated_at: 3 }),
+    ]);
+    expect(sorted.map((item) => item.raw_pane_id)).toEqual(['new', 'old']);
+  });
+
+  it('requires two contradictory snapshots before clearing blocked controls', () => {
+    const misses = new Map<string, number>();
+    const blocked = agent({ status: 'blocked', command: 'touch marker' });
+    const working = agent({ status: 'working' });
+    const first = mergeAgentList([blocked], 'relay', [working], misses, new Set())[0];
+    expect(first.status).toBe('blocked');
+    expect(first.command).toBe('touch marker');
+    const second = mergeAgentList([first], 'relay', [working], misses, new Set())[0];
+    expect(second.status).toBe('working');
+
+    const immediate = mergeAgentList([blocked], 'relay', [working], new Map(), new Set([blocked.pane_id]))[0];
+    expect(immediate.status).toBe('working');
+  });
+
+  it('clears an old question when a blocked update explicitly becomes an approval', () => {
+    const interaction: QuestionInteraction = {
+      id: 'old-question', kind: 'single_select', question: 'Old question',
+      options: [{ index: 0, label: 'First' }],
+    };
+    const question = agent({ status: 'blocked', interaction, question_layout: true });
+    const approval = agent({ status: 'blocked', interaction: null, question_layout: false });
+    expect(mergeAgentDetails(question, approval)).toMatchObject({
+      status: 'blocked', interaction: null, question_layout: false,
+    });
+
+    const sparse = agent({ status: 'blocked' });
+    expect(mergeAgentDetails(question, sparse)).toMatchObject({
+      interaction, question_layout: true,
+    });
+  });
+});
+
+describe('activity, question drafts, and launch names', () => {
+  it('searches every visible activity field and details', () => {
+    const activity = {
+      summary: 'Approval accepted', kind: 'approval', status: 'confirmed', relay_label: 'Fedora',
+      project: 'herdr-mobile-relay', agent: 'Codex', details: { choice: 'Approve once' },
+    };
+    expect(activityMatchesSearch(activity, 'fedora')).toBe(true);
+    expect(activityMatchesSearch(activity, 'approve once')).toBe(true);
+    expect(activityMatchesSearch(activity, 'missing')).toBe(false);
+  });
+
+  it('keeps staged question answers local and validates single choice', () => {
+    const interaction: QuestionInteraction = {
+      id: 'q1', kind: 'single_select', question: 'Choose scope',
+      options: [{ index: 0, label: 'Repository' }, { index: 1, label: 'Module' }],
+      other: { label: 'None', allow_empty: true },
+    };
+    let draft = createQuestionDraft(interaction);
+    expect(questionSubmitAllowed(interaction, draft)).toBe(false);
+    draft = updateQuestionOption(interaction, draft, 1, true);
+    expect([...draft.selected]).toEqual([1]);
+    expect(questionSubmitAllowed(interaction, draft)).toBe(true);
+    draft = updateQuestionOther(interaction, draft, true, 'Custom');
+    expect([...draft.selected]).toEqual([]);
+    expect(draft.otherText).toBe('Custom');
+  });
+
+  it('prefers a confirmed single choice over an incomplete cached draft', () => {
+    const interaction: QuestionInteraction = {
+      id: 'confirmed-q1', kind: 'single_select', question: 'Choose reconnect behavior',
+      options: [
+        { index: 0, label: 'Backoff' },
+        { index: 1, label: 'Signals', selected: true },
+      ],
+      other: { label: 'Other' },
+    };
+    const incoming = createQuestionDraft(interaction);
+    const incomplete = { selected: new Set<number>(), otherSelected: false, otherText: '' };
+    const unsent = { selected: new Set([0]), otherSelected: false, otherText: '' };
+
+    expect(shouldRestoreQuestionDraft(interaction, incomplete, incoming)).toBe(false);
+    expect(shouldRestoreQuestionDraft(interaction, unsent, incoming)).toBe(true);
+
+    const multi = { ...interaction, kind: 'multi_select' as const };
+    expect(shouldRestoreQuestionDraft(multi, incomplete, createQuestionDraft(multi))).toBe(true);
+  });
+
+  it('builds bounded portable launch names', () => {
+    expect(suggestedLaunchName('/home/me/Development/herdr-mobile-relay', 'codex')).toBe('herdr-mobile-relay-codex');
+    expect(suggestedLaunchName('/Users/me/Projects/Málaga App', 'claude')).toBe('malaga-app-claude');
+    expect(suggestedLaunchName('/', 'opencode')).toBe('project-opencode');
+    expect(suggestedLaunchName(`/home/me/${'project'.repeat(12)}`, 'codex').length).toBeLessThanOrEqual(48);
+  });
+});

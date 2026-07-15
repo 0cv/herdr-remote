@@ -211,7 +211,9 @@ new_case() {
 
 run_setup() {
     set +e
-    "$ROOT/relay/stable-setup.sh" > "$OUTPUT" 2>&1
+    # Keep confirmation cases deterministic when the parent test runner has a
+    # TTY (for example, `make check` inside a Herdr pane).
+    "$ROOT/relay/stable-setup.sh" < /dev/null > "$OUTPUT" 2>&1
     STATUS=$?
     set -e
 }

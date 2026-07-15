@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -15,6 +16,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 
 RELAY_PATH = Path(__file__).parents[1] / "relay" / "herdr_relay.py"
+ROOT_PATH = RELAY_PATH.parents[1]
+PLUGIN_MANIFEST = ROOT_PATH / "herdr-plugin.toml"
+PLUGIN_VERSION_MATCH = re.search(r'^version = "([^"]+)"$', PLUGIN_MANIFEST.read_text(), re.MULTILINE)
+if not PLUGIN_VERSION_MATCH:
+    raise RuntimeError("herdr-plugin.toml does not declare a version")
+PLUGIN_VERSION = PLUGIN_VERSION_MATCH.group(1)
 SPEC = importlib.util.spec_from_file_location("herdr_relay_under_test", RELAY_PATH)
 relay = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(relay)
@@ -72,6 +79,20 @@ Submit
 Enter to select · ↑/↓ to navigate · Esc to cancel
 """
 
+CLAUDE_FIRST_QUESTION_VIEW = """
+\x1b[48;2;55;55;55m Reconnect \x1b[0m ☐ Offline ☐ Feedback ✓ Submit →
+What should drive reconnect attempts?
+❯ 1. Backoff + jitter
+Reduce synchronized retries.
+2. Fixed retry
+Keep timing predictable.
+3. Event-driven
+Retry only after connectivity changes.
+4. Type something.
+5. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel
+"""
+
 CODEX_QUESTION_VIEW = """
 \x1b[48;2;240;240;240m  \x1b[2mQuestion 1/3 (3 unanswered)
 \x1b[48;2;240;240;240m  \x1b[38;5;6mWhere should the reusable adapter boundary sit?
@@ -112,8 +133,12 @@ class ClaudeHistoryIsolationMixin:
         self.addCleanup(patcher.stop)
         relay.claude_history_state.clear()
         relay.claude_history_save_times.clear()
+        relay.blocked_agent_details.clear()
+        relay.latest_agents_message = relay.agents_message([])
+        relay.last_broadcast_agents_message = None
         self.addCleanup(relay.claude_history_state.clear)
         self.addCleanup(relay.claude_history_save_times.clear)
+        self.addCleanup(relay.blocked_agent_details.clear)
 
 
 class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
@@ -139,6 +164,85 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         self.assertEqual(interaction["submit_label"], "Submit")
         self.assertTrue(interaction["can_chat"])
         self.assertEqual(interaction["_focus"], ("option", 0))
+
+    def test_claude_first_question_uses_next_and_hides_redundant_chat(self):
+        interaction = relay.parse_claude_question(CLAUDE_FIRST_QUESTION_VIEW)
+        public = relay.public_question_interaction(interaction)
+
+        self.assertEqual(interaction["kind"], "single_select")
+        self.assertEqual(interaction["submit_label"], "Next")
+        self.assertTrue(interaction["can_chat"])
+        self.assertFalse(public["can_chat"])
+        self.assertEqual(public["question_index"], 1)
+        self.assertEqual(public["question_total"], 3)
+        self.assertTrue(relay.question_has_next(CLAUDE_FIRST_QUESTION_VIEW))
+        final = CLAUDE_FIRST_QUESTION_VIEW.replace(
+            "\x1b[48;2;55;55;55m Reconnect \x1b[0m ☐ Offline ☐ Feedback",
+            "✓ Reconnect ✓ Offline \x1b[48;2;55;55;55m Feedback \x1b[0m",
+        )
+        self.assertFalse(relay.question_has_next(final))
+        self.assertEqual(relay.claude_question_position(final), (3, 3))
+        self.assertEqual(relay.parse_claude_question(final)["submit_label"], "Submit")
+
+    def test_claude_single_select_keeps_identity_and_separates_retained_other_text(self):
+        answered = (
+            CLAUDE_FIRST_QUESTION_VIEW
+            .replace(
+                "2. Fixed retry",
+                "2. \x1b[38;2;78;186;101mFixed retry\x1b[0m "
+                "\x1b[38;2;78;186;101m✔\x1b[0m",
+            )
+            .replace("4. Type something.", "4. Hello")
+        )
+        original = relay.parse_claude_question(CLAUDE_FIRST_QUESTION_VIEW)
+        interaction = relay.parse_claude_question(answered)
+
+        self.assertEqual(interaction["id"], original["id"])
+        self.assertEqual(
+            [(item["label"], item["selected"]) for item in interaction["options"]],
+            [
+                ("Backoff + jitter", False),
+                ("Fixed retry", True),
+                ("Event-driven", False),
+            ],
+        )
+        self.assertEqual(interaction["other"], {"selected": False, "text": "Hello"})
+
+        other_answered = answered.replace(
+            "4. Hello",
+            "4. \x1b[38;2;78;186;101mHello ✔\x1b[0m",
+        ).replace(
+            "2. \x1b[38;2;78;186;101mFixed retry\x1b[0m "
+            "\x1b[38;2;78;186;101m✔\x1b[0m",
+            "2. Fixed retry",
+        )
+        other = relay.parse_claude_question(other_answered)
+        self.assertEqual(other["id"], original["id"])
+        self.assertFalse(any(item["selected"] for item in other["options"]))
+        self.assertEqual(other["other"], {"selected": True, "text": "Hello"})
+
+    def test_historical_claude_question_does_not_hide_current_approval(self):
+        approval = """
+Plan complete. Claude is ready to proceed.
+Do you want to proceed?
+❯ 1. Yes, clear context and auto-accept edits
+2. Yes, auto-accept edits
+3. Yes, manually approve edits
+4. Type here to tell Claude what to change
+"""
+        pane = CLAUDE_FIRST_QUESTION_VIEW + approval
+
+        self.assertFalse(relay.question_layout_hint(pane))
+        self.assertIsNone(relay.parse_question(pane, "claude"))
+        self.assertEqual(
+            relay.detect_options(pane),
+            [
+                "Yes, clear context and auto-accept edits",
+                "Yes, auto-accept edits",
+                "Yes, manually approve edits",
+                "Type here to tell Claude what to change",
+            ],
+        )
 
     def test_parses_codex_plan_question_with_descriptions_and_navigation(self):
         interaction = relay.parse_codex_question(CODEX_QUESTION_VIEW)
@@ -184,9 +288,12 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         )
 
         interaction = relay.parse_codex_question(answered)
+        public = relay.public_question_interaction(interaction)
 
         self.assertTrue(interaction["_can_go_back"])
-        self.assertTrue(relay.public_question_interaction(interaction)["can_go_back"])
+        self.assertTrue(public["can_go_back"])
+        self.assertEqual(public["question_index"], 2)
+        self.assertEqual(public["question_total"], 3)
         self.assertTrue(interaction["_notes_active"])
         self.assertTrue(interaction["other"]["selected"])
         self.assertEqual(
@@ -254,8 +361,12 @@ tab to add notes | enter to submit answer | ←/→ to navigate questions
 
         self.assertFalse(first["_can_go_back"])
         self.assertFalse(relay.public_question_interaction(first)["can_go_back"])
+        self.assertEqual(first["_question_index"], 1)
+        self.assertEqual(first["_question_total"], 2)
         self.assertTrue(later["_can_go_back"])
         self.assertTrue(relay.public_question_interaction(later)["can_go_back"])
+        self.assertEqual(later["_question_index"], 2)
+        self.assertEqual(later["_question_total"], 2)
         self.assertFalse(relay.parse_claude_question(MULTI_QUESTION_VIEW)["_can_go_back"])
 
     def test_parses_claude_single_select_and_custom_other(self):
@@ -266,7 +377,7 @@ Which environment should receive the build?
 Fast feedback for the team.
 2. Staging
 Production-like verification.
-3. A dedicated scratch org
+3. A dedicated scratch org ✔
 4. Chat about this
 """)
 
@@ -343,6 +454,78 @@ Production-like verification.
         self.assertEqual(instance_ids[0], instance_ids[1])
         self.assertEqual(mode, 0o600)
 
+    def test_web_asset_path_allows_only_explicit_release_assets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            web_dir = Path(temp_dir) / "web"
+            (web_dir / "assets").mkdir(parents=True)
+            (web_dir / "icons").mkdir()
+            for relative in (
+                "index.html",
+                "manifest.webmanifest",
+                "notification-icons.js",
+                "sw.js",
+                "assets/app.js",
+                "assets/app.css",
+                "icons/icon.svg",
+                "icons/icon-192.png",
+            ):
+                (web_dir / relative).write_text(relative)
+
+            with patch.object(relay, "WEB_DIR", web_dir):
+                accepted = {
+                    path: relay.web_asset_path(path)
+                    for path in (
+                        "",
+                        "/",
+                        "/index.html",
+                        "/manifest.webmanifest",
+                        "/notification-icons.js",
+                        "/sw.js",
+                        "/assets/app.js",
+                        "/assets/app.css",
+                        "/icons/icon.svg",
+                        "/icons/icon-192.png",
+                        "/assets/app.js?v=8",
+                        "/icons/icon.svg?purpose=maskable",
+                    )
+                }
+
+                rejected = [
+                    "/missing",
+                    "/_headers",
+                    "/assets",
+                    "/assets/",
+                    "/assets/other.js",
+                    "/assets/app.js.map",
+                    "/icons",
+                    "/icons/",
+                    "/icons/missing.svg",
+                    "/icons/../index.html",
+                    "/icons/%2e%2e/index.html",
+                    "/icons/%2E%2E%2Findex.html",
+                    "/icons\\..\\index.html",
+                    "/icons/%5c..%5cindex.html",
+                    "//etc/passwd",
+                    "/C:/Windows/system.ini",
+                ]
+                rejected_results = {path: relay.web_asset_path(path) for path in rejected}
+
+            self.assertTrue(all(accepted.values()), accepted)
+            self.assertTrue(all(value is None for value in rejected_results.values()), rejected_results)
+
+    def test_web_asset_path_rejects_symlinks_that_escape_release_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            web_dir = root / "web"
+            icons_dir = web_dir / "icons"
+            icons_dir.mkdir(parents=True)
+            outside = root / "outside.svg"
+            outside.write_text("outside")
+            (icons_dir / "escape.svg").symlink_to(outside)
+
+            with patch.object(relay, "WEB_DIR", web_dir):
+                self.assertIsNone(relay.web_asset_path("/icons/escape.svg"))
+
     def test_respond_keys_select_first_middle_and_last(self):
         self.assertEqual(relay.respond_keys(0, 3), ["Enter"])
         self.assertEqual(relay.respond_keys(1, 3), ["Down", "Enter"])
@@ -363,6 +546,44 @@ Production-like verification.
             [agent["pane_id"] for agent in json.loads(first)["agents"]],
             ["w1:p1", "w1:p2"],
         )
+
+    def test_blocked_details_are_cached_in_reconnect_snapshot_and_pruned(self):
+        blocked = {
+            "pane_id": "w1:p1",
+            "status": "blocked",
+            "agent": "claude",
+            "project": "relay",
+        }
+        interaction = relay.public_question_interaction(
+            relay.parse_claude_question(CLAUDE_FIRST_QUESTION_VIEW)
+        )
+        with (
+            patch.object(relay, "blocked_agent_details", {}),
+            patch.object(relay, "latest_agents_message", relay.agents_message([blocked])),
+        ):
+            relay.cache_blocked_agent_details({
+                "pane_id": "w1:p1",
+                "prompt": interaction["question"],
+                "command": interaction["question"],
+                "options": [],
+                "interaction": interaction,
+                "question_layout": True,
+            })
+            reconnect = json.loads(relay.latest_agents_message)["agents"][0]
+
+            self.assertEqual(reconnect["interaction"]["id"], interaction["id"])
+            self.assertTrue(reconnect["question_layout"])
+            self.assertEqual(reconnect["options"], [])
+
+            relay.prune_blocked_agent_details([
+                {**blocked, "status": "working"},
+            ])
+            resumed = json.loads(relay.agents_message([
+                {**blocked, "status": "working"},
+            ]))["agents"][0]
+
+        self.assertNotIn("interaction", resumed)
+        self.assertNotIn("question_layout", resumed)
 
     def test_poll_interval_stays_fast_for_empty_or_active_agent_lists(self):
         self.assertEqual(relay.poll_interval_for(None), relay.POLL_INTERVAL)
@@ -490,10 +711,16 @@ Production-like verification.
     def test_plugin_manifest_is_marketplace_ready_at_repository_root(self):
         root = RELAY_PATH.parents[1]
         manifest = (root / "herdr-plugin.toml").read_text()
+        description_match = re.search(r'^description = "([^"]+)"$', manifest, re.MULTILINE)
 
         self.assertFalse((root / "relay" / "herdr-plugin.toml").exists())
         self.assertIn('id = "herdr-mobile-relay.events"', manifest)
-        self.assertIn('version = "0.5.1"', manifest)
+        self.assertIsNotNone(description_match)
+        description = description_match.group(1).lower()
+        self.assertIn("remote", description)
+        self.assertIn("smartphone", description)
+        self.assertRegex(PLUGIN_VERSION, r"^\d+\.\d+\.\d+$")
+        self.assertIn(f'**Current version:** `{PLUGIN_VERSION}`', (root / "README.md").read_text())
         self.assertIn('id = "setup"', manifest)
         self.assertIn('command = "herdr-mobile-relay.events.setup"', manifest)
         self.assertIn('command = ["bash", "relay/open-plugin-pane.sh", "setup"]', manifest)
@@ -501,6 +728,7 @@ Production-like verification.
         self.assertIn('id = "quick-start"', manifest)
         self.assertIn('command = ["bash", "relay/open-plugin-pane.sh", "quick-start"]', manifest)
         self.assertIn('command = ["bash", "relay/plugin-quick-start.sh"]', manifest)
+
         self.assertIn('id = "install-service"', manifest)
         self.assertIn('command = ["bash", "relay/open-plugin-pane.sh", "install-service"]', manifest)
         self.assertIn('command = ["bash", "relay/plugin-install-service.sh"]', manifest)
@@ -516,6 +744,19 @@ Production-like verification.
         plugin_installer = (root / "relay" / "plugin-install-service.sh").read_text()
         self.assertIn('. "$SCRIPT_DIR/common.sh"', plugin_installer)
         self.assertIn('"$SCRIPT_DIR/stable-setup.sh"', plugin_installer)
+
+    def test_dev_tunnel_is_isolated_from_the_default_relay(self):
+        root = Path(__file__).parents[1]
+        script = (root / "relay" / "dev-tunnel.sh").read_text()
+        makefile = (root / "Makefile").read_text()
+
+        self.assertIn('HERDR_DEV_CONFIG_DIR:-$SCRIPT_DIR/.dev', script)
+        self.assertIn('HERDR_DEV_RELAY_PORT:-18375', script)
+        self.assertIn('HERDR_DEV_PLUGIN_PORT:-18376', script)
+        self.assertIn('HERDR_RELAY_HOST="127.0.0.1"', script)
+        self.assertIn('HERDR_WEB_ROOT="$REPO_DIR/frontend/dist"', script)
+        self.assertIn('npm --prefix "$REPO_DIR/frontend" run build', script)
+        self.assertIn("dev-tunnel:\n\trelay/dev-tunnel.sh", makefile)
 
     def test_plugin_build_soft_fails_without_uv_or_network(self):
         root = RELAY_PATH.parents[1]
@@ -630,7 +871,7 @@ Production-like verification.
         self.assertIn(".cache/herdr-mobile-relay/post-install.sh", nohup_args)
         self.assertNotIn(str(root), nohup_args)
         self.assertTrue(waiter_copy_exists)
-        self.assertIn("0.5.1", nohup_args)
+        self.assertIn(PLUGIN_VERSION, nohup_args)
 
     def test_plugin_build_releases_captured_pipes_before_waiter_exits(self):
         # Regression: herdr registers the plugin only after the install
@@ -681,7 +922,7 @@ Production-like verification.
             registry = temp / "plugins.json"
             registry.write_text(json.dumps([{
                 "plugin_id": "herdr-mobile-relay.events",
-                "version": "0.5.1",
+                "version": PLUGIN_VERSION,
                 "enabled": True,
                 "plugin_root": str(root),
                 "actions": [{"id": "setup"}],
@@ -706,7 +947,7 @@ Production-like verification.
             with socket_reader, socket_writer:
                 env["HERDR_SOCKET_PATH"] = inherited_socket_path(socket_reader)
                 result = subprocess.run(
-                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.1", "0"],
+                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), PLUGIN_VERSION, "0"],
                     capture_output=True,
                     text=True,
                     env=env,
@@ -731,7 +972,7 @@ Production-like verification.
             registry = temp / "plugins.json"
             registry.write_text(json.dumps([{
                 "plugin_id": "herdr-mobile-relay.events",
-                "version": "0.5.1",
+                "version": PLUGIN_VERSION,
                 "enabled": True,
                 "plugin_root": str(root),
                 "actions": [{"id": "setup"}],
@@ -756,7 +997,7 @@ Production-like verification.
             with socket_reader, socket_writer:
                 env["HERDR_SOCKET_PATH"] = inherited_socket_path(socket_reader)
                 result = subprocess.run(
-                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.1", "0"],
+                    ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), PLUGIN_VERSION, "0"],
                     capture_output=True,
                     text=True,
                     env=env,
@@ -806,7 +1047,7 @@ Production-like verification.
             })
 
             result = subprocess.run(
-                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.1", "0"],
+                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), PLUGIN_VERSION, "0"],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -830,7 +1071,7 @@ Production-like verification.
             })
 
             result = subprocess.run(
-                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), "0.5.1", "0"],
+                ["/bin/sh", str(root / "relay" / "plugin-post-install.sh"), PLUGIN_VERSION, "0"],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -1154,6 +1395,7 @@ Production-like verification.
                 ["bash", str(root / "relay" / "plugin-status.sh")],
                 check=True,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 env=env,
             )
@@ -1601,9 +1843,12 @@ Production-like verification.
                 path.mkdir(parents=True, exist_ok=True)
             outside_link.symlink_to(outside_dir, target_is_directory=True)
 
+            real_scandir = os.scandir
+
             def macos_scandir(path):
-                self.assertEqual(Path(path), downloads)
-                raise PermissionError("Operation not permitted")
+                if Path(path) == downloads:
+                    raise PermissionError("Operation not permitted")
+                return real_scandir(path)
 
             with (
                 patch.object(relay.Path, "home", return_value=home),
@@ -1654,6 +1899,52 @@ Production-like verification.
                 resolved, error = relay.resolve_agent_cwd(outside)
         self.assertIsNone(resolved)
         self.assertIn("home directory", error)
+
+    def test_workspace_selection_prefers_the_space_owned_by_the_working_directory(self):
+        cwd = Path("/home/test/Development/project")
+        panes = {
+            "panes": [
+                {"workspace_id": "w1", "cwd": "/home/test/other"},
+                {"workspace_id": "w1", "cwd": str(cwd)},
+                {"workspace_id": "w2", "cwd": str(cwd)},
+                {"workspace_id": "w2", "cwd": str(cwd)},
+            ],
+        }
+        workspaces = {
+            "workspaces": [
+                {"workspace_id": "w1", "label": "other"},
+                {"workspace_id": "w2", "label": "project"},
+            ],
+        }
+
+        self.assertEqual(relay.select_workspace_for_cwd(cwd, panes, workspaces), "w2")
+
+    def test_workspace_selection_does_not_reuse_ambiguous_stray_panes(self):
+        cwd = Path("/home/test/Development/project")
+        panes = {
+            "panes": [
+                {"workspace_id": "w1", "cwd": "/home/test/one"},
+                {"workspace_id": "w1", "cwd": str(cwd)},
+                {"workspace_id": "w2", "cwd": "/home/test/two"},
+                {"workspace_id": "w2", "cwd": str(cwd)},
+            ],
+        }
+        workspaces = {
+            "workspaces": [
+                {"workspace_id": "w1", "label": "one"},
+                {"workspace_id": "w2", "label": "two"},
+            ],
+        }
+
+        self.assertEqual(relay.select_workspace_for_cwd(cwd, panes, workspaces), "")
+        self.assertEqual(
+            relay.select_workspace_for_cwd(
+                cwd,
+                {"panes": panes["panes"][:2]},
+                {"workspaces": workspaces["workspaces"][:1]},
+            ),
+            "",
+        )
 
 
 class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTestCase):
@@ -1959,6 +2250,28 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
             "pane", "send-text", "w1:p1", "Back-port all four"
         )
 
+    async def test_claude_normal_answer_clears_retained_other_text_first(self):
+        interaction = relay.parse_claude_question(CLAUDE_FIRST_QUESTION_VIEW)
+        interaction["other"] = {"selected": True, "text": "Hello"}
+        cleared = copy.deepcopy(interaction)
+        cleared["other"] = {"selected": False, "text": ""}
+        set_other = AsyncMock(return_value=(cleared, ""))
+        move_focus = AsyncMock(return_value=(cleared, ""))
+        send_keys = AsyncMock(return_value=(True, ""))
+        with (
+            patch.object(relay, "set_question_other_text", set_other),
+            patch.object(relay, "move_question_focus", move_focus),
+            patch.object(relay, "send_question_keys", send_keys),
+        ):
+            ok, error = await relay.execute_question_answer(
+                "w1:p1", interaction, [1], False, ""
+            )
+
+        self.assertTrue(ok, error)
+        set_other.assert_awaited_once_with("w1:p1", interaction, "")
+        move_focus.assert_awaited_once_with("w1:p1", cleared, ("option", 1))
+        send_keys.assert_awaited_once_with("w1:p1", ["Enter"])
+
     async def test_multi_question_answer_rechecks_each_change_before_next(self):
         interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
         after_first = copy.deepcopy(interaction)
@@ -2170,6 +2483,10 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(ws.messages[-1]["ok"])
         self.assertEqual(ws.messages[-1]["phase"], "advanced")
         self.assertEqual(ws.messages[-1]["data"]["interaction"]["id"], "next-question")
+        self.assertEqual(
+            relay.blocked_agent_details["w1:p1"]["interaction"]["id"],
+            "next-question",
+        )
 
     async def test_poll_gate_does_not_skip_status_or_history_bookkeeping(self):
         def agent_snapshot():
@@ -2245,6 +2562,22 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(broadcast.await_count, 2)
         self.assertEqual(json.loads(latest)["agents"][0]["status"], "working")
 
+    async def test_requested_refresh_sends_unchanged_snapshot_to_requesting_client(self):
+        ws = FakeWebSocket()
+        snapshot = relay.agents_message([
+            {"pane_id": "w1:p1", "status": "working", "agent": "codex"},
+        ])
+        with (
+            patch.object(relay, "clients", {ws}),
+            patch.object(relay, "agent_refresh_clients", {ws}),
+            patch.object(relay, "latest_agents_message", snapshot),
+        ):
+            await relay.send_requested_agent_refreshes()
+
+            self.assertEqual(relay.agent_refresh_clients, set())
+
+        self.assertEqual(ws.messages, [json.loads(snapshot)])
+
     async def test_new_client_receives_cached_agents_immediately_after_config(self):
         ws = FakeWebSocket()
         cached = relay.agents_message([
@@ -2255,6 +2588,11 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
             patch.object(relay, "load_agent_profiles", return_value={}),
             patch.object(relay, "ensure_vapid_public_key", return_value="public-key"),
             patch.object(relay, "load_activity", return_value=[]),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
         ):
             await relay.handle_client(ws)
 
@@ -2263,6 +2601,57 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
             ["push_config", "agents", "activity_history"],
         )
         self.assertEqual(ws.messages[1]["agents"][0]["pane_id"], "w1:p1")
+        self.assertNotIn(ws, relay.clients)
+
+    async def test_client_refresh_replies_from_cache_and_wakes_poll(self):
+        class RefreshClients(set):
+            def __init__(self):
+                super().__init__()
+                self.added = []
+
+            def add(self, item):
+                self.added.append(item)
+                super().add(item)
+
+        class RefreshWebSocket(FakeWebSocket):
+            def __init__(self):
+                super().__init__()
+                self.incoming = iter([json.dumps({"type": "refresh_agents"})])
+
+            async def __anext__(self):
+                try:
+                    return next(self.incoming)
+                except StopIteration:
+                    raise StopAsyncIteration from None
+
+        ws = RefreshWebSocket()
+        cached = relay.agents_message([
+            {"pane_id": "w1:p1", "status": "working", "agent": "codex"},
+        ])
+        refresh_clients = RefreshClients()
+        with (
+            patch.object(relay, "latest_agents_message", cached),
+            patch.object(relay, "load_agent_profiles", return_value={}),
+            patch.object(relay, "ensure_vapid_public_key", return_value="public-key"),
+            patch.object(relay, "load_activity", return_value=[]),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(relay, "agent_refresh_clients", refresh_clients),
+            patch.object(relay, "wake_poll_loop") as wake,
+        ):
+            await relay.handle_client(ws)
+
+        wake.assert_called_once_with()
+        self.assertEqual(
+            [message["type"] for message in ws.messages],
+            ["push_config", "agents", "activity_history", "agents"],
+        )
+        self.assertEqual(ws.messages[-1]["agents"][0]["pane_id"], "w1:p1")
+        self.assertEqual(refresh_clients.added, [ws])
+        self.assertEqual(refresh_clients, set())
         self.assertNotIn(ws, relay.clients)
 
     async def test_only_successful_state_commands_wake_adaptive_polling(self):
@@ -2325,6 +2714,28 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
             "status": "idle",
         })
 
+    async def test_viewing_working_pane_does_not_broadcast_false_idle(self):
+        pane = "w1:p1"
+        relay.agent_types[pane] = "codex"
+        relay.last_statuses[pane] = "working"
+        relay.unseen_done_panes.discard(pane)
+        relay.acknowledged_done_panes.discard(pane)
+        try:
+            with (
+                patch.object(relay, "broadcast", AsyncMock()) as broadcast,
+                patch.object(relay, "wake_poll_loop") as wake,
+            ):
+                acknowledged = await relay.acknowledge_pane_viewed(pane)
+        finally:
+            relay.agent_types.pop(pane, None)
+            relay.last_statuses.pop(pane, None)
+            relay.unseen_done_panes.discard(pane)
+            relay.acknowledged_done_panes.discard(pane)
+
+        self.assertFalse(acknowledged)
+        broadcast.assert_not_awaited()
+        wake.assert_not_called()
+
     async def test_claude_history_capture_reads_ansi_snapshot(self):
         relay.agent_types["w1:p1"] = "claude"
         relay.claude_history_state.clear()
@@ -2380,6 +2791,61 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(unauthorized.status_code, 401)
         self.assertIsNone(authorized)
+
+    async def test_http_static_assets_have_exact_mime_and_security_headers(self):
+        expected_types = {
+            "/": "text/html; charset=utf-8",
+            "/assets/app.js?v=8": "text/javascript; charset=utf-8",
+            "/assets/app.css?v=8": "text/css; charset=utf-8",
+            "/notification-icons.js": "text/javascript; charset=utf-8",
+            "/manifest.webmanifest": "application/manifest+json; charset=utf-8",
+            "/icons/icon.svg": "image/svg+xml",
+            "/icons/icon-192.png": "image/png",
+        }
+
+        for path, content_type in expected_types.items():
+            with self.subTest(path=path):
+                response = await relay.process_request(None, FakeRequest(path))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["Content-Type"], content_type)
+                self.assertEqual(response.headers["Cache-Control"], "no-cache")
+                self.assertRegex(response.headers["ETag"], r'^"[0-9a-f]{64}"$')
+                self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+
+        for path in ("/_headers", "/assets/unknown.css", "/icons", "/missing.txt"):
+            with self.subTest(path=path):
+                response = await relay.process_request(None, FakeRequest(path))
+                self.assertEqual(response.status_code, 404)
+
+    async def test_http_static_assets_return_304_for_matching_etags(self):
+        initial = await relay.process_request(
+            None, FakeRequest("/assets/app.js?v=35")
+        )
+        etag = initial.headers["ETag"]
+        same_asset = await relay.process_request(
+            None,
+            FakeRequest(
+                "/assets/app.js?v=999",
+                [("If-None-Match", f'"other", W/{etag}')],
+            ),
+        )
+        changed = await relay.process_request(
+            None,
+            FakeRequest(
+                "/assets/app.js?v=35",
+                [("If-None-Match", '"different"')],
+            ),
+        )
+
+        self.assertEqual(initial.status_code, 200)
+        self.assertTrue(initial.body)
+        self.assertEqual(same_asset.status_code, 304)
+        self.assertEqual(same_asset.body, b"")
+        self.assertEqual(same_asset.headers["ETag"], etag)
+        self.assertEqual(same_asset.headers["Cache-Control"], "no-cache")
+        self.assertEqual(same_asset.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(changed.body, initial.body)
 
     async def test_health_preserves_plain_response_and_healthz_reports_details(self):
         health = await relay.process_request(None, FakeRequest("/health"))
@@ -2463,14 +2929,16 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         with tempfile.TemporaryDirectory() as cwd:
             msg["cwd"] = cwd
             command_results = [
-                (True, json.dumps({"result": {"pane_id": "w2:p1", "workspace_id": "w2"}}), ""),
-                (True, json.dumps({"result": {"move_result": {"pane": {"pane_id": "w2:p1", "tab_id": "w2:t2"}}}}), ""),
+                (True, json.dumps({"result": {"pane_id": "w2:p0", "workspace_id": "w2"}}), ""),
+                (True, json.dumps({"result": {"move_result": {"pane": {"pane_id": "w2:p0", "tab_id": "w2:t2"}}}}), ""),
+                (True, json.dumps({"result": {"agent": {"pane_id": "w2:p1", "workspace_id": "w2"}}}), ""),
                 (True, "", ""),
                 (True, "", ""),
             ]
             with (
                 patch.object(relay.Path, "home", return_value=Path(cwd)),
                 patch.object(relay, "load_agent_profiles", return_value={"test": {"id": "test", "label": "Test", "argv": ["test-agent"]}}),
+                patch.object(relay, "workspace_id_for_cwd", AsyncMock(return_value="w7")),
                 patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=command_results)) as run_command,
                 patch.object(relay, "publish_activity", AsyncMock()),
                 patch.object(relay.asyncio, "sleep", AsyncMock()),
@@ -2478,11 +2946,50 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
                 await relay.handle_agent_start_command(ws, msg)
 
         calls = [call.args for call in run_command.await_args_list]
-        self.assertEqual(calls[0][-2:], ("--", "test-agent"))
+        self.assertEqual(calls[0], (
+            "agent", "start", "mobile-test", "--cwd", cwd,
+            "--workspace", "w7", "--no-focus", "--", "test-agent",
+        ))
         self.assertNotIn("--literal task text", calls[0])
-        self.assertEqual(calls[1], ("pane", "move", "w2:p1", "--new-tab", "--workspace", "w2", "--label", "mobile-test", "--no-focus"))
-        self.assertEqual(calls[2], ("pane", "send-text", "w2:p1", "--literal task text"))
+        self.assertEqual(calls[1], ("pane", "move", "w2:p0", "--new-tab", "--workspace", "w7", "--label", "mobile-test", "--no-focus"))
+        self.assertEqual(calls[2], ("agent", "get", "mobile-test"))
+        self.assertEqual(calls[3], ("pane", "send-text", "w2:p1", "--literal task text"))
         self.assertTrue(ws.messages[-1]["ok"])
+        self.assertEqual(ws.messages[-1]["data"]["pane_id"], "w2:p1")
+        self.assertEqual(ws.messages[-1]["data"]["name"], "mobile-test")
+        self.assertEqual(ws.messages[-1]["data"]["cwd"], cwd)
+
+    async def test_agent_start_creates_a_space_when_the_working_directory_has_none(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cwd = Path(temp_dir) / "new-project"
+            cwd.mkdir()
+            with (
+                patch.object(relay, "workspace_id_for_cwd", AsyncMock(return_value="")),
+                patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=[
+                    (True, json.dumps({"result": {"pane_id": "w8:p11", "workspace_id": "w8"}}), ""),
+                    (True, json.dumps({"result": {"move_result": {"pane": {"pane_id": "w10:p1", "workspace_id": "w10"}}}}), ""),
+                    (True, json.dumps({"result": {"agent": {"pane_id": "w10:p1", "workspace_id": "w10"}}}), ""),
+                ])) as run_command,
+            ):
+                ok, _data, pane_id, placement_error, error = await relay.start_agent_in_new_tab(
+                    {"id": "test", "label": "Test", "argv": ["test-agent"]},
+                    "mobile-test",
+                    cwd,
+                )
+
+        calls = [call.args for call in run_command.await_args_list]
+        self.assertEqual(calls[0], (
+            "agent", "start", "mobile-test", "--cwd", str(cwd),
+            "--no-focus", "--", "test-agent",
+        ))
+        self.assertEqual(calls[1], (
+            "pane", "move", "w8:p11", "--new-workspace", "--label", "new-project",
+            "--tab-label", "mobile-test", "--no-focus",
+        ))
+        self.assertTrue(ok)
+        self.assertEqual(pane_id, "w10:p1")
+        self.assertEqual(placement_error, "")
+        self.assertEqual(error, "")
 
     async def test_agent_clear_starts_replacement_before_closing_old_pane(self):
         ws = FakeWebSocket()
@@ -2497,9 +3004,11 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
                     AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
                 ),
                 patch.object(relay, "load_agent_profiles", return_value={"codex": {"id": "codex", "label": "Codex", "argv": ["codex"]}}),
+                patch.object(relay, "workspace_id_for_cwd", AsyncMock(return_value="w1")),
                 patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=[
                     (True, json.dumps({"result": {"pane_id": "w1:p2", "workspace_id": "w1"}}), ""),
                     (True, json.dumps({"result": {"move_result": {"pane": {"pane_id": "w1:p2", "tab_id": "w1:t3"}}}}), ""),
+                    (True, json.dumps({"result": {"agent": {"pane_id": "w1:p2", "workspace_id": "w1"}}}), ""),
                     (True, "", ""),
                 ])) as run_command,
                 patch.object(relay, "publish_activity", AsyncMock()),
@@ -2513,8 +3022,11 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         calls = [call.args for call in run_command.await_args_list]
         self.assertEqual(calls[0][0:2], ("agent", "start"))
         self.assertEqual(calls[1][0:3], ("pane", "move", "w1:p2"))
-        self.assertEqual(calls[2], ("pane", "close", "w1:p1"))
+        self.assertEqual(calls[2][0:2], ("agent", "get"))
+        self.assertEqual(calls[3], ("pane", "close", "w1:p1"))
         self.assertTrue(ws.messages[-1]["ok"])
+        self.assertEqual(ws.messages[-1]["data"]["pane_id"], "w1:p2")
+        self.assertEqual(ws.messages[-1]["data"]["cwd"], cwd)
 
 
 if __name__ == "__main__":

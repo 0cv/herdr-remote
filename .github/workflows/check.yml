@@ -6,14 +6,50 @@ on:
   pull_request:
 
 jobs:
-  check:
+  backend:
+    name: backend (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.14']
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
       # setup-uv ships v8.x releases but no floating v8 major tag (v7 is the
       # newest alias), so pin the exact version.
       - uses: astral-sh/setup-uv@v8.3.2
+      - run: make backend-check
+
+  frontend:
+    name: frontend (Node 24)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - run: make check
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: make frontend-check
+      - run: npm --prefix frontend exec -- playwright install --with-deps chromium webkit
+      - run: make frontend-browser
+      - id: web-changes
+        name: Check for release bundle changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$BASE_SHA" HEAD -- web; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.web-changes.outputs.changed == 'true'
+        run: make web-release-check

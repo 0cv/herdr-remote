@@ -6,8 +6,12 @@ __pycache__/
 .DS_Store
 .swiftpm/
 .venv/
+node_modules/
+playwright-report/
+test-results/
 .env
 relay/.env
+relay/.dev/
 relay/push/
 relay/cloudflared/
 relay/stable-setup.json
