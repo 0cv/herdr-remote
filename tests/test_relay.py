@@ -497,6 +497,9 @@ Production-like verification.
                     "/assets/",
                     "/assets/other.js",
                     "/assets/app.js.map",
+                    "/assets/app.js.br",
+                    "/assets/app.css.br",
+                    "/index.html.br",
                     "/icons",
                     "/icons/",
                     "/icons/missing.svg",
@@ -522,9 +525,15 @@ Production-like verification.
             outside = root / "outside.svg"
             outside.write_text("outside")
             (icons_dir / "escape.svg").symlink_to(outside)
+            source = icons_dir / "icon.svg"
+            source.write_text("icon")
+            compressed_outside = root / "outside.svg.br"
+            compressed_outside.write_text("compressed outside")
+            (icons_dir / "icon.svg.br").symlink_to(compressed_outside)
 
             with patch.object(relay, "WEB_DIR", web_dir):
                 self.assertIsNone(relay.web_asset_path("/icons/escape.svg"))
+                self.assertIsNone(relay.precompressed_asset_path(source, "br"))
 
     def test_respond_keys_select_first_middle_and_last(self):
         self.assertEqual(relay.respond_keys(0, 3), ["Enter"])
@@ -2810,6 +2819,7 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
                 self.assertEqual(response.headers["Content-Type"], content_type)
                 self.assertEqual(response.headers["Cache-Control"], "no-cache")
                 self.assertRegex(response.headers["ETag"], r'^"[0-9a-f]{64}"$')
+                self.assertEqual(response.headers["Vary"], "Accept-Encoding")
                 self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
 
         for path in ("/_headers", "/assets/unknown.css", "/icons", "/missing.txt"):
@@ -2843,9 +2853,50 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(same_asset.body, b"")
         self.assertEqual(same_asset.headers["ETag"], etag)
         self.assertEqual(same_asset.headers["Cache-Control"], "no-cache")
+        self.assertEqual(same_asset.headers["Vary"], "Accept-Encoding")
         self.assertEqual(same_asset.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(changed.status_code, 200)
         self.assertEqual(changed.body, initial.body)
+
+    async def test_http_static_assets_negotiate_brotli_with_distinct_etags(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            web_dir = Path(temp_dir) / "web"
+            assets_dir = web_dir / "assets"
+            assets_dir.mkdir(parents=True)
+            source = b"const repeated = 'mobile relay';\n" * 20
+            compressed = b"deterministic-brotli-representation"
+            (assets_dir / "app.js").write_bytes(source)
+            (assets_dir / "app.js.br").write_bytes(compressed)
+
+            with patch.object(relay, "WEB_DIR", web_dir):
+                identity = await relay.process_request(
+                    None, FakeRequest("/assets/app.js", [("Accept-Encoding", "gzip")])
+                )
+                brotli = await relay.process_request(
+                    None, FakeRequest("/assets/app.js", [("Accept-Encoding", "gzip, br")])
+                )
+                disabled = await relay.process_request(
+                    None, FakeRequest("/assets/app.js", [("Accept-Encoding", "*, br;q=0")])
+                )
+                unchanged = await relay.process_request(
+                    None,
+                    FakeRequest(
+                        "/assets/app.js",
+                        [("Accept-Encoding", "br"), ("If-None-Match", brotli.headers["ETag"])],
+                    ),
+                )
+
+        self.assertEqual(identity.body, source)
+        self.assertIsNone(identity.headers.get("Content-Encoding"))
+        self.assertEqual(brotli.body, compressed)
+        self.assertEqual(brotli.headers["Content-Encoding"], "br")
+        self.assertEqual(brotli.headers["Vary"], "Accept-Encoding")
+        self.assertNotEqual(identity.headers["ETag"], brotli.headers["ETag"])
+        self.assertEqual(disabled.body, source)
+        self.assertIsNone(disabled.headers.get("Content-Encoding"))
+        self.assertEqual(unchanged.status_code, 304)
+        self.assertEqual(unchanged.body, b"")
+        self.assertEqual(unchanged.headers["Content-Encoding"], "br")
 
     async def test_health_preserves_plain_response_and_healthz_reports_details(self):
         health = await relay.process_request(None, FakeRequest("/health"))

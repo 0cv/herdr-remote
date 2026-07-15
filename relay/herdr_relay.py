@@ -2254,6 +2254,34 @@ def etag_matches(value, etag):
     return False
 
 
+def encoding_quality(value, encoding):
+    if not value:
+        return 0.0
+    explicit = None
+    wildcard = 0.0
+    for item in value.split(","):
+        parts = [part.strip() for part in item.split(";")]
+        name = parts[0].lower()
+        if name not in {encoding, "*"}:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            key, separator, raw_value = parameter.partition("=")
+            if separator and key.strip().lower() == "q":
+                try:
+                    quality = float(raw_value.strip())
+                except ValueError:
+                    quality = 0.0
+                if not 0.0 <= quality <= 1.0:
+                    quality = 0.0
+                break
+        if name == encoding:
+            explicit = max(explicit or 0.0, quality)
+        else:
+            wildcard = max(wildcard, quality)
+    return explicit if explicit is not None else wildcard
+
+
 def query_value(path, name):
     if "?" not in (path or ""):
         return None
@@ -2331,6 +2359,19 @@ def web_asset_path(request_path):
     return asset
 
 
+def precompressed_asset_path(asset, encoding):
+    if encoding != "br":
+        return None
+    try:
+        compressed = asset.with_name(f"{asset.name}.br").resolve()
+        web_root = WEB_DIR.resolve()
+    except OSError:
+        return None
+    if not compressed.is_relative_to(web_root) or not compressed.is_file():
+        return None
+    return compressed
+
+
 async def process_request(connection, request):
     """Serve the phone app over HTTP and authenticate WebSocket upgrades."""
     from websockets.http11 import Response
@@ -2366,8 +2407,13 @@ async def process_request(connection, request):
     if not asset:
         headers = Headers([("Content-Type", "text/plain; charset=utf-8")])
         return Response(404, "Not Found", headers, b"Not found\n")
+    compressed_asset = precompressed_asset_path(asset, "br")
+    use_brotli = compressed_asset and encoding_quality(
+        header_value(request, "accept-encoding"), "br"
+    ) > 0
+    response_asset = compressed_asset if use_brotli else asset
     try:
-        body = asset.read_bytes()
+        body = response_asset.read_bytes()
     except OSError:
         headers = Headers([("Content-Type", "text/plain; charset=utf-8")])
         return Response(404, "Not Found", headers, b"Not found\n")
@@ -2377,8 +2423,11 @@ async def process_request(connection, request):
         ("Content-Type", content_type),
         ("Cache-Control", "no-cache"),
         ("ETag", etag),
+        ("Vary", "Accept-Encoding"),
         ("X-Content-Type-Options", "nosniff"),
     ])
+    if use_brotli:
+        headers["Content-Encoding"] = "br"
     if etag_matches(header_value(request, "if-none-match"), etag):
         return Response(304, "Not Modified", headers, b"")
     return Response(200, "OK", headers, body)

@@ -1,6 +1,8 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { brotliDecompressSync } from 'node:zlib';
 import versions from '../build-versions.json' with { type: 'json' };
+import { compressedAssets } from './compressed-assets.mjs';
 
 const root = resolve(process.argv[2] || 'dist');
 const required = [
@@ -22,6 +24,15 @@ for (const relative of required) {
   const file = join(root, relative);
   if (!(await stat(file).catch(() => null))?.isFile()) {
     throw new Error(`Required release file is missing: ${relative}`);
+  }
+}
+
+for (const relative of compressedAssets) {
+  const source = await readFile(join(root, relative));
+  const compressed = await readFile(join(root, `${relative}.br`));
+  const decompressed = brotliDecompressSync(compressed);
+  if (!decompressed.equals(source)) {
+    throw new Error(`Brotli asset does not match its source: ${relative}.br`);
   }
 }
 
