@@ -503,6 +503,36 @@ test('refreshes agents on return home and preserves terminal behavior', async ({
   expect((await commands(page)).find((command) => command.type === 'submit_prompt')).toMatchObject({ text: 'send this', pane_id: 'w1:p1' });
 });
 
+test('resets the home page scroll offset before opening a terminal', async ({ page }) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0);
+  await server(page, 0, {
+    type: 'agents',
+    agents: Array.from({ length: 20 }, (_, index) => ({
+      pane_id: `w1:p${index + 1}`,
+      status: 'working',
+      project: `Scrollable agent ${index + 1}`,
+      agent: 'codex',
+    })),
+  });
+
+  const lastAgent = page.getByRole('button', { name: 'Open Scrollable agent 20 on Fedora' });
+  await page.evaluate(() => { document.documentElement.style.minHeight = '300vh'; });
+  await lastAgent.scrollIntoViewIfNeeded();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await page.evaluate(() => { window.scrollTo = () => {}; });
+  await lastAgent.click();
+
+  const terminal = page.getByRole('main', { name: 'Terminal for Scrollable agent 20' });
+  await expect(terminal).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await expect.poll(async () => terminal.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return Math.round(window.innerHeight - bounds.bottom);
+  })).toBe(0);
+});
+
 test('launches and manages agent lifecycle commands', async ({ page }) => {
   await boot(page, [fedora]);
   await expect.poll(() => socketCount(page)).toBe(1);

@@ -18,6 +18,11 @@ type HistoryViewState = ViewState & {
 export const currentView = writable<ViewState>({ view: 'agents' });
 let viewIndex = 0;
 
+function showView(state: ViewState): void {
+  if (state.view !== 'agents') window.scrollTo(0, 0);
+  currentView.set(state);
+}
+
 export function stateFromLocation(locationValue: Pick<Location, 'hash'> = location): ViewState {
   if (locationValue.hash === '#settings') return { view: 'settings' };
   if (locationValue.hash === '#launch') return { view: 'launch' };
@@ -50,12 +55,12 @@ export function viewUrl(state: ViewState): string {
 export function navigate(state: ViewState): void {
   viewIndex += 1;
   history.pushState({ herdrView: true, index: viewIndex, ...state }, '', viewUrl(state));
-  currentView.set(state);
+  showView(state);
 }
 
 export function replaceView(state: ViewState): void {
   history.replaceState({ herdrView: true, index: viewIndex, ...state }, '', viewUrl(state));
-  currentView.set(state);
+  showView(state);
 }
 
 export function closeCurrentView(): void {
@@ -72,9 +77,9 @@ export function initializeRouter(): () => void {
   const onPopState = (event: PopStateEvent) => {
     const state = event.state as HistoryViewState | null;
     viewIndex = Number.isInteger(state?.index) ? Number(state?.index) : 0;
-    currentView.set(state?.herdrView ? state : { view: 'agents' });
+    showView(state?.herdrView ? state : { view: 'agents' });
   };
-  const onHashChange = () => currentView.set(stateFromLocation());
+  const onHashChange = () => showView(stateFromLocation());
   window.addEventListener('popstate', onPopState);
   window.addEventListener('hashchange', onHashChange);
   return () => {
@@ -88,7 +93,7 @@ export function routeNotificationUrl(url: string): void {
     const target = new URL(url, location.href);
     if (target.origin !== location.origin || !target.hash) return;
     if (location.hash !== target.hash) location.hash = target.hash;
-    else currentView.set(stateFromLocation());
+    else showView(stateFromLocation());
   } catch {
     // Ignore cross-origin and malformed notification URLs.
   }
