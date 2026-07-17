@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import configparser
 from collections import deque
 from pathlib import Path
 
@@ -111,11 +112,51 @@ IMAGE_MIME_EXTENSIONS = {
     "image/heic": ".heic",
     "image/heif": ".heif",
 }
-AGENT_PROFILE_CANDIDATES = {
+_DEFAULT_AGENT_PROFILE_CANDIDATES = {
     "codex": "Codex",
     "claude": "Claude Code",
     "opencode": "OpenCode",
 }
+
+_AGENT_PROFILES_INI = Path.home() / ".config" / "herdr" / "agent-profiles.ini"
+
+
+def _load_agent_profiles_from_config():
+    """Load agent profiles from ~/.config/herdr/agent-profiles.ini.
+
+    Expected INI section::
+
+        [profiles]
+        codex = Codex
+        claude = Claude Code
+        opencode = OpenCode
+        pi = Pi
+
+    Returns an ordered dict of ``id: label`` when the file exists and has a
+    non-empty ``[profiles]`` section. Returns ``None`` when missing so
+    callers fall back to the default candidates.
+    """
+    if not _AGENT_PROFILES_INI.is_file():
+        return None
+    try:
+        parser = configparser.ConfigParser()
+        parser.read_string(_AGENT_PROFILES_INI.read_text())
+    except (OSError, configparser.Error):
+        return None
+    if not parser.has_section("profiles"):
+        return None
+    profiles = {}
+    for key, value in parser.items("profiles"):
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            profiles[key] = value
+    return profiles or None
+
+
+AGENT_PROFILE_CANDIDATES = (
+    _load_agent_profiles_from_config() or _DEFAULT_AGENT_PROFILE_CANDIDATES
+)
 MACOS_PROTECTED_HOME_DIRECTORIES = {"Desktop", "Documents", "Downloads"}
 RELAY_CAPABILITIES = ["directory_browser", "structured_questions", "slash_commands"]
 # Version 2 adds staged Claude Code question answers. Bump together with
