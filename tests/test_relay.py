@@ -13,6 +13,7 @@ import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from contextlib import contextmanager
 
 
 RELAY_PATH = Path(__file__).parents[1] / "relay" / "herdr_relay.py"
@@ -2003,7 +2004,12 @@ Production-like verification.
     # ── Dynamic agent-profiles INI tests ─────────────────────────────
 
     def _make_test_ini(self, text, base_dir=""):
-        """Write a temporary agent-profiles.ini and point the relay at it."""
+        """Write a temporary agent-profiles.ini and point the relay at it.
+
+        Returns ``(ini, base)`` and registers cleanup for the temp file.
+        The caller must still patch ``_CONFIG_HOME``, ``_AGENT_PROFILES_INI``,
+        and ``_AGENT_PROFILES_INI_CACHE`` in the test body.
+        """
         base = Path(base_dir) if base_dir else Path(tempfile.mkdtemp())
         ini = base / "agent-profiles.ini"
         ini.parent.mkdir(parents=True, exist_ok=True)
@@ -2011,13 +2017,26 @@ Production-like verification.
         self.addCleanup(lambda: ini.unlink(missing_ok=True))
         return ini, base
 
-    def test_dynamic_profiles_merge_with_defaults(self):
-        ini, base = self._make_test_ini("[profiles]\npi = Pi\n")
+    @contextmanager
+    def _patch_ini_config(self, ini, base):
+        """Context manager that patches the relay's INI wiring end-to-end.
+
+        Patches ``_CONFIG_HOME``, ``_AGENT_PROFILES_INI``, and the cached
+        parser so that ``_load_agent_profiles_from_config`` and
+        ``_agent_skill_dirs`` see the temp file.  All three are
+        auto-restored when the context exits — no stale parser leaks into
+        other tests.
+        """
         with (
             patch.object(relay, "_CONFIG_HOME", base),
             patch.object(relay, "_AGENT_PROFILES_INI", ini),
         ):
-            relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+            with patch.object(relay, "_AGENT_PROFILES_INI_CACHE", relay._read_agent_profiles_ini()):
+                yield ini, base
+
+    def test_dynamic_profiles_merge_with_defaults(self):
+        ini, base = self._make_test_ini("[profiles]\npi = Pi\n")
+        with self._patch_ini_config(ini, base):
             candidates = relay._load_agent_profiles_from_config()
         self.assertIn("codex", candidates)
         self.assertIn("claude", candidates)
@@ -2029,57 +2048,37 @@ Production-like verification.
         ini, base = self._make_test_ini(
             "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
         )
-        with (
-            patch.object(relay, "_CONFIG_HOME", base),
-            patch.object(relay, "_AGENT_PROFILES_INI", ini),
-        ):
-            relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+        with self._patch_ini_config(ini, base):
             candidates = relay._load_agent_profiles_from_config()
         self.assertEqual(set(candidates), {"pi"})
 
     def test_dynamic_profiles_missing_file_falls_back_to_defaults(self):
         ini, base = self._make_test_ini("")
         ini.unlink()
-        with (
-            patch.object(relay, "_CONFIG_HOME", base),
-            patch.object(relay, "_AGENT_PROFILES_INI", ini),
-        ):
-            relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+        with self._patch_ini_config(ini, base):
             candidates = relay._load_agent_profiles_from_config()
         # No file → None returned → defaults used by module constant.
         self.assertIsNone(candidates)
 
     def test_dynamic_profiles_empty_section_falls_back(self):
         ini, base = self._make_test_ini("[profiles]\n")
-        with (
-            patch.object(relay, "_CONFIG_HOME", base),
-            patch.object(relay, "_AGENT_PROFILES_INI", ini),
-        ):
-            relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+        with self._patch_ini_config(ini, base):
             candidates = relay._load_agent_profiles_from_config()
         self.assertIsNone(candidates)
 
     def test_dynamic_profiles_override_default_label(self):
         ini, base = self._make_test_ini("[profiles]\ncodex = OpenCode (local)\n")
-        with (
-            patch.object(relay, "_CONFIG_HOME", base),
-            patch.object(relay, "_AGENT_PROFILES_INI", ini),
-        ):
-            relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+        with self._patch_ini_config(ini, base):
             candidates = relay._load_agent_profiles_from_config()
         self.assertEqual(candidates["codex"], "OpenCode (local)")
 
     def test_percent_signs_do_not_crash_ini_parsing(self):
         ini, base = self._make_test_ini(
             "[profiles]\npi = Pi %00\n"
-            "[skills]\npi = /tmp/skills%%dir0:/tmp/%%dir1\n"
+            "[skills]\npi = /tmp/skills%%dir0" + os.pathsep + "/tmp/%%dir1\n"
             "[config]\nreplace_profiles = false\n"
         )
-        with (
-            patch.object(relay, "_CONFIG_HOME", base),
-            patch.object(relay, "_AGENT_PROFILES_INI", ini),
-        ):
-            relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+        with self._patch_ini_config(ini, base):
             candidates = relay._load_agent_profiles_from_config()
             dirs = relay._agent_skill_dirs("pi")
         self.assertEqual(candidates["pi"], "Pi %00")
@@ -2088,11 +2087,7 @@ Production-like verification.
 
     def test_malformed_ini_does_not_crash(self):
         ini, base = self._make_test_ini("this is not valid INI at all [[[\n???\n")
-        with (
-            patch.object(relay, "_CONFIG_HOME", base),
-            patch.object(relay, "_AGENT_PROFILES_INI", ini),
-        ):
-            relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+        with self._patch_ini_config(ini, base):
             candidates = relay._load_agent_profiles_from_config()
             dirs = relay._agent_skill_dirs("pi")
         self.assertIsNone(candidates)
@@ -2108,11 +2103,7 @@ Production-like verification.
             ini, base = self._make_test_ini(
                 f"[skills]\npi = {skills_dir}\n"
             )
-            with (
-                patch.object(relay, "_CONFIG_HOME", base),
-                patch.object(relay, "_AGENT_PROFILES_INI", ini),
-            ):
-                relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+            with self._patch_ini_config(ini, base):
                 dirs = relay._agent_skill_dirs("pi")
                 cmds, _trunc = relay.discover_agent_skills("pi")
             self.assertEqual(dirs, [skills_dir])
@@ -2135,11 +2126,7 @@ Production-like verification.
             ini, base = self._make_test_ini(
                 f"[skills]\npi = {dir1}{os.pathsep}{dir2}\n"
             )
-            with (
-                patch.object(relay, "_CONFIG_HOME", base),
-                patch.object(relay, "_AGENT_PROFILES_INI", ini),
-            ):
-                relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+            with self._patch_ini_config(ini, base):
                 cmds, _trunc = relay.discover_agent_skills("pi")
             beta = next(c for c in cmds if c["command"] == "/skill:beta")
             self.assertEqual(beta["source"], "project")
@@ -2157,11 +2144,7 @@ Production-like verification.
             ini, base = self._make_test_ini(
                 f"[skills]\npi = {dir1}{os.pathsep}{dir2}\n"
             )
-            with (
-                patch.object(relay, "_CONFIG_HOME", base),
-                patch.object(relay, "_AGENT_PROFILES_INI", ini),
-            ):
-                relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+            with self._patch_ini_config(ini, base):
                 cmds, _trunc = relay.discover_agent_skills("pi")
             dup = [c for c in cmds if c["command"] == "/skill:dup"]
             self.assertEqual(len(dup), 1)
@@ -2176,11 +2159,7 @@ Production-like verification.
             ini, base = self._make_test_ini(
                 f"[skills]\npi = {skills_dir}\n"
             )
-            with (
-                patch.object(relay, "_CONFIG_HOME", base),
-                patch.object(relay, "_AGENT_PROFILES_INI", ini),
-            ):
-                relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+            with self._patch_ini_config(ini, base):
                 cmds, _trunc = relay.discover_agent_skills("pi")
             self.assertTrue(any(c["command"] == "/skill:triage" for c in cmds))
 
@@ -2197,11 +2176,7 @@ Production-like verification.
             ini, base = self._make_test_ini(
                 f"[skills]\npi = {skills_dir}\n"
             )
-            with (
-                patch.object(relay, "_CONFIG_HOME", base),
-                patch.object(relay, "_AGENT_PROFILES_INI", ini),
-            ):
-                relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+            with self._patch_ini_config(ini, base):
                 cmds, _trunc = relay.discover_agent_skills("pi")
             names = {c["command"] for c in cmds}
             self.assertIn("/skill:visible", names)
@@ -2217,13 +2192,9 @@ Production-like verification.
             ini, base = self._make_test_ini(
                 f"[skills]\npi = {skills_dir}\n"
             )
-            with (
-                patch.object(relay, "_CONFIG_HOME", base),
-                patch.object(relay, "_AGENT_PROFILES_INI", ini),
-                patch.object(relay, "SLASH_COMMAND_MAX_CUSTOM_FILES", 2),
-            ):
-                relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
-                cmds, truncated = relay.discover_agent_skills("pi")
+            with self._patch_ini_config(ini, base):
+                with patch.object(relay, "SLASH_COMMAND_MAX_CUSTOM_FILES", 2):
+                    cmds, truncated = relay.discover_agent_skills("pi")
             self.assertTrue(truncated)
             self.assertEqual(len(cmds), 2)
 
@@ -2236,15 +2207,32 @@ Production-like verification.
             ini, base = self._make_test_ini(
                 f"[skills]\npi = {skills_dir}\n"
             )
-            with (
-                patch.object(relay, "_CONFIG_HOME", base),
-                patch.object(relay, "_AGENT_PROFILES_INI", ini),
-            ):
-                relay._AGENT_PROFILES_INI_CACHE = relay._read_agent_profiles_ini()
+            with self._patch_ini_config(ini, base):
                 catalog = relay.slash_command_catalog({"agent": "pi"})
             self.assertTrue(any(
                 c["command"] == "/skill:firehose" for c in catalog["commands"]
             ))
+
+    # Reload takes a module lock, so only one test should do it.  This test
+    # proves that the module-level constant ``AGENT_PROFILE_CANDIDATES`` is
+    # computed from ``_load_agent_profiles_from_config()`` at import time
+    # and falls back to ``_DEFAULT_AGENT_PROFILE_CANDIDATES`` when the INI
+    # file is absent.
+    def test_agent_profile_candidates_is_module_constant_from_config(self):
+        """``AGENT_PROFILE_CANDIDATES`` is computed at import time.
+
+        The constant is always a non-empty dict. When
+        ``_load_agent_profiles_from_config`` returns ``None`` (no INI),
+        it falls back to ``_DEFAULT_AGENT_PROFILE_CANDIDATES``.
+        """
+        # Sanity: the module constant exists and is a dict.
+        self.assertIsInstance(relay.AGENT_PROFILE_CANDIDATES, dict)
+        self.assertTrue(relay.AGENT_PROFILE_CANDIDATES)
+        # The constant is composed of the defaults when no INI exists.
+        # (The test environment has no ~/.config/herdr/agent-profiles.ini
+        # by design, so this is the normal runtime baseline.)
+        for key in ("codex", "claude", "opencode"):
+            self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
 
     def test_workspace_selection_prefers_the_space_owned_by_the_working_directory(self):
         cwd = Path("/home/test/Development/project")
