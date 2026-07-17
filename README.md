@@ -133,7 +133,7 @@ HERDR_MOBILE_RELAY_NO_AUTO_SETUP=1 herdr plugin install 0cv/herdr-mobile-relay -
   herdr plugin action invoke install-service --plugin herdr-mobile-relay.events
 ```
 
-The stable setup reuses the computer's saved tunnel configuration and restarts the relay. For a source checkout, run `git pull --ff-only && make service-install` from its directory. Later versioned releases are checked at relay startup, once per day, and whenever you tap **Settings → Check** for that relay. The same commands are available under **Settings → Update Help** when a connected relay still needs the bootstrap.
+The stable setup follows the configuration recorded by an existing stable service, including one previously installed from a source checkout, then restarts the relay under the Marketplace plugin. To remain checkout-managed instead, run `git pull --ff-only && make service-install` from that checkout. Later versioned releases are checked at relay startup, once per day, and whenever you tap **Settings → Check** for that relay. The same commands are available under **Settings → Update Help** when a connected relay still needs the bootstrap.
 
 An update is offered only when the `main` branch publishes a higher semantic version. The relay pins the advertised Git revision, asks for confirmation, installs that exact revision outside its own service process, restarts, and verifies `/healthz`. A failed verification triggers an automatic rollback.
 

@@ -1502,6 +1502,61 @@ Production-like verification.
 
         self.assertIn(f"resolved={relay_env}", result.stdout)
 
+    def test_plugin_install_service_follows_a_checkout_service_configuration_on_macos(self):
+        root = RELAY_PATH.parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            home = temp / "home"
+            relay_env = temp / "checkout" / "relay" / ".env"
+            relay_env.parent.mkdir(parents=True)
+            relay_env.write_text("HERDR_RELAY_TOKEN=test-token\n")
+            service_file = (
+                home
+                / "Library"
+                / "LaunchAgents"
+                / "com.herdr-mobile-relay.service.plist"
+            )
+            service_file.parent.mkdir(parents=True)
+            service_file.write_text(
+                "<key>HERDR_RELAY_ENV</key>\n"
+                f"<string>{relay_env}</string>\n"
+            )
+
+            for name in ("plugin-install-service.sh", "common.sh"):
+                source = root / "relay" / name
+                target = temp / name
+                target.write_text(source.read_text())
+                target.chmod(0o700)
+            stable_setup = temp / "stable-setup.sh"
+            stable_setup.write_text(
+                '#!/bin/sh\nprintf "resolved=%s\\n" "$HERDR_RELAY_ENV"\n'
+            )
+            stable_setup.chmod(0o700)
+            bin_dir = temp / "bin"
+            bin_dir.mkdir()
+            fake_uname = bin_dir / "uname"
+            fake_uname.write_text("#!/bin/sh\necho Darwin\n")
+            fake_uname.chmod(0o700)
+            env = os.environ.copy()
+            env.pop("HERDR_RELAY_ENV", None)
+            env.update({
+                "HOME": str(home),
+                "HERDR_PLUGIN_CONFIG_DIR": str(temp / "plugin-config"),
+                "PATH": f"{bin_dir}:{env['PATH']}",
+            })
+
+            result = subprocess.run(
+                ["bash", str(temp / "plugin-install-service.sh")],
+                check=True,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                env=env,
+            )
+
+        self.assertIn("Reusing the installed relay configuration", result.stdout)
+        self.assertIn(f"resolved={relay_env}", result.stdout)
+
     def test_relay_health_check_retries_until_detailed_health_is_ready(self):
         root = RELAY_PATH.parents[1]
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -403,13 +403,13 @@
 >
   <p>On the computer running this relay, open Terminal and run:</p>
   <pre class="update-command"><code>{MANAGED_UPDATE_COMMAND}</code></pre>
-  <p class="hint">This updates the Marketplace plugin, reuses the stable tunnel configuration, and restarts the relay.</p>
+  <p class="hint">This updates the Marketplace plugin, preserves the configuration used by an existing stable service, and restarts the relay.</p>
   <div class="dialog-actions">
     <Button onclick={() => copyUpdateCommand(MANAGED_UPDATE_COMMAND, 'Marketplace')}>Copy Command</Button>
     <Button variant="ghost" onclick={() => { manualOpen = false; }}>Close</Button>
   </div>
   <details class="checkout-update">
-    <summary>Installed from a source checkout?</summary>
+    <summary>Prefer to keep using a source checkout?</summary>
     <p class="hint">Run this from the checkout directory:</p>
     <pre class="update-command"><code>{CHECKOUT_UPDATE_COMMAND}</code></pre>
     <Button variant="secondary" size="sm" onclick={() => copyUpdateCommand(CHECKOUT_UPDATE_COMMAND, 'Source checkout')}>Copy Checkout Command</Button>

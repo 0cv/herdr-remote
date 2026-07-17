@@ -86,6 +86,8 @@ describe('settings relay status', () => {
     expect(within(dialog).getByText(/HERDR_MOBILE_RELAY_NO_AUTO_SETUP=1 herdr plugin install/)).toHaveTextContent(
       'herdr plugin action invoke install-service --plugin herdr-mobile-relay.events',
     );
+    expect(dialog).toHaveTextContent('preserves the configuration used by an existing stable service');
+    expect(dialog).toHaveTextContent('Prefer to keep using a source checkout?');
     expect(screen.queryByText(/assets \d+/i)).not.toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 3 }).at(-1)).toHaveTextContent('About');
   });
