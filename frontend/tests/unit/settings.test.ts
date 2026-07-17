@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from '$components/SettingsView.svelte';
-import { PUSH_ENABLED_KEY, STATUS_LINE_KEY } from '$lib/config';
+import { PUSH_ENABLED_KEY, STATUS_LINE_KEY, TERMINAL_HISTORY_KEY } from '$lib/config';
 import { relayStore } from '$lib/store';
 
 class MockWebSocket {
@@ -83,6 +83,19 @@ describe('settings relay status', () => {
     await user.click(statusLine);
     expect(statusLine.checked).toBe(nextStatusLine);
     expect(localStorage.getItem(STATUS_LINE_KEY)).toBe(String(nextStatusLine));
+  });
+
+  it('persists the selected terminal history size', async () => {
+    const user = userEvent.setup();
+    render(SettingsView);
+    const history = within(screen.getByRole('group', { name: 'Terminal History' }));
+
+    expect(history.getByRole('button', { name: '1000' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(history.getByRole('button', { name: '10000' }));
+    expect(history.getByRole('button', { name: '10000' })).toHaveAttribute('aria-pressed', 'true');
+    expect(localStorage.getItem(TERMINAL_HISTORY_KEY)).toBe('10000');
+
+    await user.click(history.getByRole('button', { name: '1000' }));
   });
 
   it('enables the finished-agent switch immediately after push is enabled', async () => {

@@ -7,6 +7,7 @@ export const THEME_KEY = 'herdr_theme';
 export const INTERFACE_SIZE_KEY = 'herdr_terminal_font_size';
 export const LEGACY_FONT_KEY = 'herdr_home_font_size';
 export const STATUS_LINE_KEY = 'herdr_show_codex_status_line';
+export const TERMINAL_HISTORY_KEY = 'herdr_terminal_history_lines';
 export const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 export const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
 export const PUSH_ENABLED_KEY = 'herdr_push_enabled';
@@ -21,6 +22,8 @@ export const THEMES = ['dark', 'light', 'nord', 'solarized', 'rose'] as const;
 export type Theme = (typeof THEMES)[number];
 export const INTERFACE_SIZES = ['compact', 'regular', 'large'] as const;
 export type InterfaceSize = (typeof INTERFACE_SIZES)[number];
+export const TERMINAL_HISTORY_OPTIONS = [100, 1_000, 5_000, 10_000] as const;
+export type TerminalHistoryLines = (typeof TERMINAL_HISTORY_OPTIONS)[number];
 export const THEME_COLORS: Record<Theme, string> = {
   dark: '#0a0a0a',
   light: '#f5f5f5',

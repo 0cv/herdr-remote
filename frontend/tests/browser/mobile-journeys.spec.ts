@@ -399,6 +399,7 @@ test('scales the whole interface from accessible settings', async ({ page }) => 
   await boot(page, [fedora]);
   await page.getByRole('button', { name: 'Settings' }).click();
   const sizes = page.getByRole('group', { name: 'Interface Size' });
+  const history = page.getByRole('group', { name: 'Terminal History' });
   const heading = page.getByRole('heading', { name: 'Settings', level: 2 });
 
   await sizes.getByRole('button', { name: 'Compact' }).click();
@@ -413,6 +414,18 @@ test('scales the whole interface from accessible settings', async ({ page }) => 
   expect(largeHeadingSize).toBeGreaterThan(compactHeadingSize);
   expect(await page.evaluate(() => document.documentElement.dataset.interfaceSize)).toBe('large');
   expect(await page.evaluate(() => localStorage.getItem('herdr_terminal_font_size'))).toBe('large');
+
+  await history.getByRole('button', { name: '10000' }).click();
+  expect(await page.evaluate(() => localStorage.getItem('herdr_terminal_history_lines'))).toBe('10000');
+  await handshake(page, 0);
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{ pane_id: 'w1:p1', status: 'idle', project: 'History app', agent: 'codex' }],
+  });
+  await page.getByRole('button', { name: 'Back' }).click();
+  await page.getByRole('button', { name: 'Open History app on Fedora' }).click();
+  await expect.poll(async () => (await commands(page))
+    .some((command) => command.type === 'read_pane' && command.lines === 10000)).toBe(true);
 });
 
 test('handles approvals, chained questions, and notification routing', async ({ page }) => {

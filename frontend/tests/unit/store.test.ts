@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setTerminalHistoryLines } from '$lib/preferences';
 import { relayStore } from '$lib/store';
 
 class MockWebSocket {
@@ -70,6 +71,28 @@ describe('relay command store', () => {
       'refresh_agents',
       'refresh_agents',
     ]);
+  });
+
+  it('requests the configured number of terminal history lines', () => {
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
+    const relayId = get(relayStore.relayConfigs)[0].id;
+    setTerminalHistoryLines(5_000);
+
+    relayStore.readPane({
+      relay_id: relayId,
+      relay_label: 'Fedora',
+      raw_pane_id: 'w1:p1',
+      pane_id: `${relayId}::w1:p1`,
+    });
+
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: 'read_pane',
+      pane_id: 'w1:p1',
+      lines: 5_000,
+      format: 'ansi',
+    });
+    setTerminalHistoryLines(1_000);
   });
 
   it('merges agents from independent relays without pane id collisions', () => {

@@ -81,7 +81,8 @@ PUSH_LOCK = threading.RLock()
 ACTIVITY_FILE = Path.home() / ".cache" / "herdr-mobile-relay" / "activity.jsonl"
 ACTIVITY_MAX_ITEMS = 500
 ACTIVITY_LOCK = threading.RLock()
-CLAUDE_HISTORY_MAX_LINES = 500
+TERMINAL_HISTORY_MAX_LINES = 10000
+CLAUDE_HISTORY_MAX_LINES = TERMINAL_HISTORY_MAX_LINES
 CLAUDE_HISTORY_FOOTER_LINES = 6
 CLAUDE_DESKTOP_PROMPT_LINES = 2
 CLAUDE_HISTORY_CAPTURE_INTERVAL = 4.0
@@ -637,6 +638,14 @@ def terminal_chrome_metadata(agent_type, fmt, question_active=False):
         "desktop_footer_lines": CLAUDE_HISTORY_FOOTER_LINES,
         "desktop_prompt_lines": CLAUDE_DESKTOP_PROMPT_LINES,
     }
+
+
+def requested_terminal_history_lines(value, default=30):
+    try:
+        requested = int(value)
+    except (TypeError, ValueError):
+        requested = default
+    return min(max(requested, 1), TERMINAL_HISTORY_MAX_LINES)
 
 
 def claude_history_content(state, limit=CLAUDE_HISTORY_MAX_LINES):
@@ -3979,10 +3988,7 @@ async def handle_client(ws):
                     continue
                 # Opening a terminal on the phone counts as viewing the pane.
                 await acknowledge_pane_viewed(pane_id)
-                try:
-                    lines = min(max(int(msg.get("lines", 30)), 1), CLAUDE_HISTORY_MAX_LINES)
-                except (TypeError, ValueError):
-                    lines = 30
+                lines = requested_terminal_history_lines(msg.get("lines", 30))
                 fmt = "ansi" if msg.get("format") == "ansi" else "text"
                 content = await run_herdr_async(
                     "pane", "read", pane_id,

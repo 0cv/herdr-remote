@@ -416,6 +416,13 @@ Production-like verification.
         self.assertEqual(relay.terminal_chrome_metadata("claude", "text"), {})
         self.assertEqual(relay.terminal_chrome_metadata("claude", "ansi", question_active=True), {})
 
+    def test_terminal_history_line_requests_are_validated_and_bounded(self):
+        self.assertEqual(relay.requested_terminal_history_lines(100), 100)
+        self.assertEqual(relay.requested_terminal_history_lines("10000"), 10000)
+        self.assertEqual(relay.requested_terminal_history_lines(20000), 10000)
+        self.assertEqual(relay.requested_terminal_history_lines(0), 1)
+        self.assertEqual(relay.requested_terminal_history_lines("invalid"), 30)
+
     def test_relay_version_marks_a_modified_checkout_dirty(self):
         results = [
             SimpleNamespace(returncode=0, stdout="abc1234\n"),

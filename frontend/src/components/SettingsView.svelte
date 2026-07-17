@@ -3,13 +3,22 @@
   import AppSwitch from '$components/ui/AppSwitch.svelte';
   import Button from '$components/ui/Button.svelte';
   import Card from '$components/ui/Card.svelte';
-  import { INTERFACE_SIZES, THEMES, type InterfaceSize, type Theme } from '$lib/config';
+  import {
+    INTERFACE_SIZES,
+    TERMINAL_HISTORY_OPTIONS,
+    THEMES,
+    type InterfaceSize,
+    type TerminalHistoryLines,
+    type Theme,
+  } from '$lib/config';
   import {
     interfaceSize,
     setInterfaceSize,
     setShowAgentStatusLine,
+    setTerminalHistoryLines,
     setTheme,
     showAgentStatusLine,
+    terminalHistoryLines,
     theme,
   } from '$lib/preferences';
   import { relayVersionMeta } from '$lib/protocol';
@@ -166,6 +175,18 @@
         <button class:active={$interfaceSize === item} type="button" aria-pressed={$interfaceSize === item} onclick={() => setInterfaceSize(item as InterfaceSize)}>{item.charAt(0).toUpperCase() + item.slice(1)}</button>
       {/each}
     </fieldset>
+    <fieldset class="choice-grid history-grid">
+      <legend>Terminal History</legend>
+      {#each TERMINAL_HISTORY_OPTIONS as item (item)}
+        <button
+          class:active={$terminalHistoryLines === item}
+          type="button"
+          aria-pressed={$terminalHistoryLines === item}
+          onclick={() => setTerminalHistoryLines(item as TerminalHistoryLines)}
+        >{item}</button>
+      {/each}
+    </fieldset>
+    <p class="hint">Lines requested per terminal. 5,000–10,000 lines can use substantially more network data and rendering work.</p>
     <AppSwitch checked={$showAgentStatusLine} label="Show Agent Status Line" onchange={setShowAgentStatusLine} />
   </Card>
 

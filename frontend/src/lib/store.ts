@@ -16,6 +16,7 @@ import {
   stabilizeBlockedSnapshot,
 } from './agents';
 import { relayProtocolError } from './protocol';
+import { terminalHistoryLines } from './preferences';
 import type {
   Activity,
   Agent,
@@ -36,7 +37,6 @@ const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const CONNECTION_HEALTH_TIMEOUT_MS = 10_000;
 const RECONNECT_BASE_DELAY_MS = 3_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
-const TERMINAL_HISTORY_LINES = 500;
 const IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 
 interface RelayConnection extends RelayConnectionView {
@@ -567,7 +567,7 @@ class RelayStore {
     this.sendRaw(agent.relay_id, {
       type: 'read_pane',
       pane_id: agent.raw_pane_id,
-      lines: TERMINAL_HISTORY_LINES,
+      lines: get(terminalHistoryLines),
       format: 'ansi',
     });
   }
