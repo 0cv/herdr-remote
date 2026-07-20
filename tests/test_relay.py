@@ -156,6 +156,29 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         self.assertTrue(relay.client_protocol_matches({"protocol": 2}))
         self.assertFalse(relay.client_protocol_matches({"protocol": True}))
 
+    def test_app_deploy_status_never_exposes_cloudflare_credentials(self):
+        config = {
+            "configured": True,
+            "origin": "https://app.example.test",
+            "project": "herdr-app",
+            "branch": "main",
+            "reason": "",
+            "npx": "/tmp/npx",
+            "node_dir": "/tmp",
+            "account_id": "account-secret",
+            "api_token": "token-secret",
+        }
+        with (
+            patch.object(relay, "APP_DEPLOY_CONFIG", config),
+            patch.object(relay, "APP_DEPLOY_REVISION", "f" * 40),
+        ):
+            status = relay.public_app_deploy_status({"state": "idle"})
+
+        self.assertNotIn("account_id", status)
+        self.assertNotIn("api_token", status)
+        self.assertNotIn("npx", status)
+        self.assertNotIn("node_dir", status)
+
     def test_parses_claude_multi_select_with_descriptions_and_other(self):
         interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
 
@@ -4096,6 +4119,76 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(ws.messages[-1]["ok"])
         self.assertEqual(ws.messages[-1]["phase"], "scheduled")
         self.assertEqual(ws.messages[-1]["data"]["job"], "update-job-1")
+
+    async def test_app_deploy_requires_the_configured_origin_and_exact_release(self):
+        ws = FakeWebSocket()
+        config = {
+            "configured": True,
+            "origin": "https://app.example.test",
+            "project": "herdr-app",
+            "branch": "main",
+            "reason": "",
+        }
+        with (
+            patch.object(relay, "APP_DEPLOY_CONFIG", config),
+            patch.object(relay, "APP_DEPLOY_STATUS", {"state": "idle"}),
+            patch.object(relay, "publish_app_deploy_status", AsyncMock()),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(
+                relay,
+                "launch_app_deploy_job",
+                side_effect=RuntimeError("this relay is not authorized to deploy the requested app origin"),
+            ),
+        ):
+            await relay.handle_deploy_app_update_command(ws, {
+                "type": "deploy_app_update",
+                "request_id": "app-deploy-1",
+                "expected_version": PLUGIN_VERSION,
+                "expected_revision": "f" * 40,
+                "expected_origin": "https://other.example.test",
+            })
+
+        self.assertFalse(ws.messages[-1]["ok"])
+        self.assertIn("not authorized", ws.messages[-1]["error"])
+
+    async def test_app_deploy_schedules_an_external_verified_job(self):
+        ws = FakeWebSocket()
+        config = {
+            "configured": True,
+            "origin": "https://app.example.test",
+            "project": "herdr-app",
+            "branch": "main",
+            "reason": "",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(relay, "APP_DEPLOY_CONFIG", config),
+                patch.object(relay, "APP_DEPLOY_STATUS", {"state": "idle"}),
+                patch.object(relay, "RUNTIME_DIR", Path(temp_dir)),
+                patch.object(relay, "publish_app_deploy_status", AsyncMock()),
+                patch.object(relay, "launch_app_deploy_job", return_value="app-deploy-job-1") as launch,
+                patch.object(
+                    relay.asyncio,
+                    "to_thread",
+                    AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+                ),
+            ):
+                await relay.handle_deploy_app_update_command(ws, {
+                    "type": "deploy_app_update",
+                    "request_id": "app-deploy-1",
+                    "expected_version": PLUGIN_VERSION,
+                    "expected_revision": "f" * 40,
+                    "expected_origin": "https://app.example.test",
+                })
+
+        launch.assert_called_once()
+        self.assertTrue(ws.messages[-1]["ok"])
+        self.assertEqual(ws.messages[-1]["phase"], "scheduled")
+        self.assertEqual(ws.messages[-1]["data"]["job"], "app-deploy-job-1")
 
     async def test_incompatible_client_protocol_rejects_mutation(self):
         ws = FakeWebSocket()

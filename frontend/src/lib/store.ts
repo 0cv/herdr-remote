@@ -19,6 +19,7 @@ import { relayProtocolError } from './protocol';
 import { terminalHistoryLines } from './preferences';
 import {
   clearPendingRelayUpdate,
+  normalizeAppDeployment,
   normalizeRelayUpdate,
   rememberPendingRelayUpdate,
 } from './updates';
@@ -204,6 +205,7 @@ class RelayStore {
       releaseVersion: '',
       revision: '',
       update: normalizeRelayUpdate(null),
+      appDeploy: normalizeAppDeployment(null),
       pushStatus: '',
       vapidPublicKey: '',
     };
@@ -341,6 +343,7 @@ class RelayStore {
         connection.releaseVersion,
         connection.revision,
       );
+      connection.appDeploy = normalizeAppDeployment(message.app_deploy);
       connection.capabilities = Array.isArray(message.capabilities) ? message.capabilities.filter(Boolean) : [];
       connection.agentProfiles = Array.isArray(message.agent_profiles)
         ? message.agent_profiles.filter((profile: any) => profile?.id)
@@ -358,6 +361,11 @@ class RelayStore {
       if (['failed', 'rolled_back'].includes(connection.update.state)) {
         clearPendingRelayUpdate(relayId);
       }
+      this.emitConnections();
+      return;
+    }
+    if (message.type === 'app_deploy_status' && connection) {
+      connection.appDeploy = normalizeAppDeployment(message.app_deploy);
       this.emitConnections();
       return;
     }
@@ -629,6 +637,26 @@ class RelayStore {
         }
       }
       throw error;
+    }
+  }
+
+  async deployAppUpdate(relayId: string, expectedVersion: string): Promise<void> {
+    const connection = this.connectionsValue.get(relayId);
+    if (!connection?.capabilities.includes('app_deploy') || !connection.appDeploy.configured) {
+      throw new CommandError(connection?.appDeploy.reason || 'This relay cannot deploy the phone app');
+    }
+    if (!connection.appDeploy.revision || connection.releaseVersion !== expectedVersion) {
+      throw new CommandError('Update this deployment relay to the upstream release first');
+    }
+    const result = await this.sendCommand(relayId, {
+      type: 'deploy_app_update',
+      expected_version: connection.releaseVersion,
+      expected_revision: connection.appDeploy.revision,
+      expected_origin: location.origin,
+    }, 30_000);
+    if (result.data?.app_deploy && connection === this.connectionsValue.get(relayId)) {
+      connection.appDeploy = normalizeAppDeployment(result.data.app_deploy);
+      this.emitConnections();
     }
   }
 

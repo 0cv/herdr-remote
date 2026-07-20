@@ -17,6 +17,10 @@ relay/cloudflared/
 relay/stable-setup.json
 relay/update-state.json
 relay/update-job-*.json
+relay/update.lock
+relay/app-deploy-state.json
+relay/app-deploy-job-*.json
+relay/app-deploy.lock
 relay/phone-app-origin
 relay/phone-app-origin.*
 .wrangler/

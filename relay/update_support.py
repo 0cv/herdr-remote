@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -26,8 +27,13 @@ UPSTREAM_MANIFEST_URL = (
 )
 UPDATE_STATE_NAME = "update-state.json"
 UPDATE_LOCK_NAME = "update.lock"
+APP_DEPLOY_STATE_NAME = "app-deploy-state.json"
+APP_DEPLOY_LOCK_NAME = "app-deploy.lock"
+WRANGLER_VERSION = "4.112.0"
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 MANIFEST_VERSION_RE = re.compile(r'^version = "([^"]+)"$', re.MULTILINE)
+PAGES_PROJECT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,57}[a-z0-9])?$")
+PAGES_BRANCH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,118}[A-Za-z0-9])?$")
 CANONICAL_REMOTE_RE = re.compile(
     r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
     r"0cv/herdr-mobile-relay(?:\.git)?/?$",
@@ -45,6 +51,7 @@ UPDATE_STATES = {
     "failed",
     "rolled_back",
 }
+APP_DEPLOY_STATES = {"idle", "scheduled", "deploying", "succeeded", "failed"}
 
 
 def compact_error(value: object, limit: int = 500) -> str:
@@ -114,6 +121,10 @@ def state_file(runtime_dir: Path) -> Path:
     return runtime_dir / UPDATE_STATE_NAME
 
 
+def app_deploy_state_file(runtime_dir: Path) -> Path:
+    return runtime_dir / APP_DEPLOY_STATE_NAME
+
+
 def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
@@ -132,6 +143,102 @@ def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
             pass
 
 
+def normalize_https_origin(value: object) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = f"{host}:{port}" if port and port != 443 else host
+    return f"https://{netloc}"
+
+
+def _relay_env_values(relay_env: str) -> dict[str, str]:
+    if not relay_env:
+        return {}
+    try:
+        lines = Path(relay_env).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {}
+    values: dict[str, str] = {}
+    for line in lines:
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(?:'([^']*)'|([^'\"#\s]*))", line.strip())
+        if not match:
+            continue
+        values[match.group(1)] = match.group(2) if match.group(2) is not None else match.group(3)
+    return values
+
+
+def app_deploy_config(
+    *,
+    environ: dict[str, str] | None = None,
+    relay_env: str = "",
+) -> dict[str, object]:
+    source = _relay_env_values(relay_env)
+    source.update(environ if environ is not None else os.environ)
+    origin = normalize_https_origin(source.get("HERDR_APP_DEPLOY_ORIGIN"))
+    project = str(source.get("HERDR_CLOUDFLARE_PAGES_PROJECT") or "").strip().lower()
+    branch = str(source.get("HERDR_CLOUDFLARE_PAGES_BRANCH") or "main").strip()
+    npx = str(source.get("HERDR_APP_DEPLOY_NPX") or "").strip()
+    node_dir = str(source.get("HERDR_APP_DEPLOY_NODE_DIR") or "").strip()
+    reason = ""
+    if not origin:
+        reason = "No HTTPS app deployment origin is configured"
+    elif not PAGES_PROJECT_RE.fullmatch(project):
+        reason = "The configured Cloudflare Pages project name is invalid"
+    elif not PAGES_BRANCH_RE.fullmatch(branch) or ".." in branch or branch.startswith("/"):
+        reason = "The configured Cloudflare Pages production branch is invalid"
+    elif not npx or not Path(npx).is_file():
+        reason = "The configured npx executable is unavailable"
+    elif not node_dir or not (Path(node_dir) / "node").is_file():
+        reason = "The configured Node.js executable is unavailable"
+    return {
+        "configured": not reason,
+        "origin": origin,
+        "project": project,
+        "branch": branch,
+        "npx": npx,
+        "node_dir": node_dir,
+        "account_id": str(source.get("CLOUDFLARE_ACCOUNT_ID") or "").strip(),
+        "api_token": str(source.get("CLOUDFLARE_API_TOKEN") or "").strip(),
+        "reason": reason,
+    }
+
+
+def read_app_deploy_state(runtime_dir: Path) -> dict[str, object]:
+    fallback: dict[str, object] = {
+        "state": "idle",
+        "target_version": "",
+        "target_revision": "",
+        "checked_at": 0,
+        "error": "",
+    }
+    try:
+        loaded = json.loads(app_deploy_state_file(runtime_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+    if not isinstance(loaded, dict) or loaded.get("state") not in APP_DEPLOY_STATES:
+        return fallback
+    result = fallback | {key: loaded.get(key, fallback[key]) for key in fallback}
+    for key in ("target_version", "target_revision", "error"):
+        result[key] = compact_error(result.get(key), 500)
+    result["checked_at"] = int(result.get("checked_at") or 0)
+    return result
+
+
 def read_update_state(
     runtime_dir: Path,
     current_version: str,
@@ -144,6 +251,8 @@ def read_update_state(
         "available_version": "",
         "available_revision": "",
         "target_revision": "",
+        "upstream_version": "",
+        "upstream_revision": "",
         "checked_at": 0,
         "can_install": False,
         "mode": "",
@@ -162,7 +271,16 @@ def read_update_state(
     }
     result["current_version"] = current_version
     result["current_revision"] = current_revision
-    for key in ("available_version", "available_revision", "target_revision", "mode", "reason", "error"):
+    for key in (
+        "available_version",
+        "available_revision",
+        "target_revision",
+        "upstream_version",
+        "upstream_revision",
+        "mode",
+        "reason",
+        "error",
+    ):
         result[key] = compact_error(result.get(key), 500)
     result["checked_at"] = int(result.get("checked_at") or 0)
     result["can_install"] = result.get("can_install") is True
@@ -331,6 +449,8 @@ def check_for_update(
             "available_version": available_version if newer else "",
             "available_revision": available_revision[:12] if newer else "",
             "target_revision": available_revision if newer else "",
+            "upstream_version": available_version,
+            "upstream_revision": available_revision,
             "checked_at": int(now if now is not None else time.time()),
             "can_install": bool(newer and eligibility["can_install"]),
             "mode": str(eligibility["mode"]),
@@ -523,6 +643,8 @@ def run_update_job(job_path: Path) -> int:
             "available_version": str(job["target_version"]),
             "available_revision": str(job["target_revision"])[:12],
             "target_revision": str(job["target_revision"]),
+            "upstream_version": str(job["target_version"]),
+            "upstream_revision": str(job["target_revision"]),
             "checked_at": int(job["checked_at"]),
             "can_install": False,
             "mode": str(job["mode"]),
@@ -553,6 +675,8 @@ def run_update_job(job_path: Path) -> int:
                     "available_version": "",
                     "available_revision": "",
                     "target_revision": "",
+                    "upstream_version": str(job["target_version"]),
+                    "upstream_revision": str(job["target_revision"]),
                 },
             )
             return 0
@@ -668,7 +792,306 @@ def launch_update_job(
     return label
 
 
+def _web_bundle_version(repo_root: Path) -> str:
+    try:
+        payload = json.loads((repo_root / "web/version.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"committed web/version.json is invalid: {compact_error(exc)}") from exc
+    version = str(payload.get("version") or "") if isinstance(payload, dict) else ""
+    if not semver(version):
+        raise RuntimeError("committed web/version.json has an invalid version")
+    if version != product_version(repo_root):
+        raise RuntimeError("committed web bundle does not match the installed release")
+    return version
+
+
+def _verified_committed_web_bundle(repo_root: Path) -> str:
+    changed = git_output(
+        repo_root,
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+        "--",
+        "herdr-plugin.toml",
+        "web",
+        "frontend/scripts/validate-build.mjs",
+        "frontend/scripts/check-size.mjs",
+    )
+    if changed:
+        raise RuntimeError("the installed app release has uncommitted bundle changes")
+    return _web_bundle_version(repo_root)
+
+
+def _app_deploy_environment(job: dict[str, object], config: dict[str, object]) -> dict[str, str]:
+    env = _runner_environment(job)
+    env["HOME"] = str(job["home"])
+    env["PATH"] = f"{config['node_dir']}:{env.get('PATH', '')}"
+    env["CI"] = "1"
+    if config.get("account_id"):
+        env["CLOUDFLARE_ACCOUNT_ID"] = str(config["account_id"])
+    if config.get("api_token"):
+        env["CLOUDFLARE_API_TOKEN"] = str(config["api_token"])
+    return env
+
+
+def _verify_deployed_app(origin: str, version: str, *, attempts: int = 30, delay: float = 2) -> None:
+    for attempt in range(attempts):
+        request = urllib.request.Request(
+            f"{origin}/version.json?check={int(time.time() * 1000)}",
+            headers={
+                "Cache-Control": "no-cache",
+                "User-Agent": "herdr-mobile-relay-app-deployer",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                content = response.read(65537)
+            if len(content) <= 65536:
+                payload = json.loads(content)
+                if isinstance(payload, dict) and payload.get("version") == version:
+                    return
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise RuntimeError(f"{origin} did not publish app version {version}")
+
+
+def run_app_deploy_job(job_path: Path) -> int:
+    try:
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"Invalid app deployment job: {exc}", file=sys.stderr)
+        return 2
+    runtime_dir = Path(str(job["runtime_dir"]))
+    lock_path = runtime_dir / APP_DEPLOY_LOCK_NAME
+    lock_handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_handle.close()
+        try:
+            job_path.unlink()
+        except OSError:
+            pass
+        return 3
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(f"{os.getpid()}\n")
+    lock_handle.flush()
+    os.chmod(lock_path, 0o600)
+    base = {
+        "target_version": str(job["target_version"]),
+        "target_revision": str(job["target_revision"]),
+        "checked_at": int(job["checked_at"]),
+        "error": "",
+    }
+    try:
+        write_json_atomic(app_deploy_state_file(runtime_dir), base | {"state": "deploying"})
+        try:
+            repo_root = Path(str(job["repo_root"])).resolve()
+            revision = git_output(repo_root, "rev-parse", "HEAD")
+            if revision != job["target_revision"]:
+                raise RuntimeError("installed release changed after the deployment was confirmed")
+            if _verified_committed_web_bundle(repo_root) != job["target_version"]:
+                raise RuntimeError("installed web bundle changed after the deployment was confirmed")
+            config = app_deploy_config(environ={}, relay_env=str(job.get("relay_env") or ""))
+            if not config["configured"]:
+                raise RuntimeError(str(config["reason"]))
+            if config["origin"] != job["origin"] or config["project"] != job["project"]:
+                raise RuntimeError("app deployment configuration changed after confirmation")
+            node = str(Path(str(config["node_dir"])) / "node")
+            environment = _app_deploy_environment(job, config)
+            for script in ("validate-build.mjs", "check-size.mjs"):
+                checked = run_command(
+                    [node, str(repo_root / f"frontend/scripts/{script}"), str(repo_root / "web")],
+                    cwd=repo_root,
+                    env=environment,
+                    timeout=60,
+                )
+                if checked.returncode != 0:
+                    raise RuntimeError(
+                        compact_error(checked.stderr or checked.stdout or f"{script} failed")
+                    )
+            deployed = run_command(
+                [
+                    str(config["npx"]),
+                    "--yes",
+                    f"wrangler@{WRANGLER_VERSION}",
+                    "pages",
+                    "deploy",
+                    str(repo_root / "web"),
+                    "--project-name",
+                    str(config["project"]),
+                    "--branch",
+                    str(config["branch"]),
+                    "--commit-hash",
+                    revision,
+                    "--commit-message",
+                    f"Herdr Mobile Relay {job['target_version']}",
+                    "--commit-dirty=false",
+                ],
+                cwd=repo_root,
+                env=environment,
+                timeout=300,
+            )
+            if deployed.returncode != 0:
+                raise RuntimeError(
+                    compact_error(deployed.stderr or deployed.stdout or "Cloudflare Pages deploy failed")
+                )
+            _verify_deployed_app(str(config["origin"]), str(job["target_version"]))
+            write_json_atomic(
+                app_deploy_state_file(runtime_dir),
+                base | {"state": "succeeded"},
+            )
+            return 0
+        except Exception as exc:
+            write_json_atomic(
+                app_deploy_state_file(runtime_dir),
+                base | {"state": "failed", "error": compact_error(exc)},
+            )
+            return 1
+    finally:
+        fcntl.flock(lock_handle, fcntl.LOCK_UN)
+        lock_handle.close()
+        try:
+            job_path.unlink()
+        except OSError:
+            pass
+
+
+def launch_app_deploy_job(
+    repo_root: Path,
+    runtime_dir: Path,
+    relay_env: str,
+    expected_version: str,
+    expected_revision: str,
+    expected_origin: str,
+    *,
+    python: str | None = None,
+    home: Path | None = None,
+    system: str | None = None,
+) -> str:
+    config = app_deploy_config(relay_env=relay_env)
+    if not config["configured"]:
+        raise RuntimeError(str(config["reason"]))
+    origin = normalize_https_origin(expected_origin)
+    if origin != config["origin"]:
+        raise RuntimeError("this relay is not authorized to deploy the requested app origin")
+    revision = git_output(repo_root, "rev-parse", "HEAD")
+    if expected_revision != revision:
+        raise RuntimeError("the installed release changed; check for updates again")
+    if expected_version != _verified_committed_web_bundle(repo_root):
+        raise RuntimeError("the installed app release changed; check for updates again")
+    home = home or Path.home()
+    system = system or platform.system()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(runtime_dir, 0o700)
+    job_path = runtime_dir / f"app-deploy-job-{int(time.time() * 1000)}.json"
+    job = {
+        "repo_root": str(repo_root.resolve()),
+        "runtime_dir": str(runtime_dir.resolve()),
+        "relay_env": relay_env,
+        "home": str(home.resolve()),
+        "system": system,
+        "origin": origin,
+        "project": str(config["project"]),
+        "target_version": expected_version,
+        "target_revision": revision,
+        "checked_at": int(time.time()),
+    }
+    write_json_atomic(job_path, job)
+    runner = str(Path(__file__).resolve())
+    python = python or sys.executable
+    label = f"herdr-mobile-relay-app-deploy-{int(time.time())}"
+    if system == "Linux":
+        systemd_run = shutil.which("systemd-run")
+        if not systemd_run:
+            raise RuntimeError("systemd-run is required for safe app deployments")
+        command = [
+            systemd_run,
+            "--user",
+            "--collect",
+            f"--unit={label}",
+            "--property=Type=exec",
+            python,
+            runner,
+            "--run-app-deploy-job",
+            str(job_path),
+        ]
+    elif system == "Darwin":
+        launchctl = shutil.which("launchctl") or "/bin/launchctl"
+        command = [
+            launchctl,
+            "submit",
+            "-l",
+            label.replace("-", "."),
+            "--",
+            python,
+            runner,
+            "--run-app-deploy-job",
+            str(job_path),
+        ]
+    else:
+        raise RuntimeError(f"{system} app deployments are unsupported")
+    result = run_command(command, timeout=20)
+    if result.returncode != 0:
+        try:
+            job_path.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(compact_error(result.stderr or result.stdout or "could not start app deployment"))
+    return label
+
+
+def deploy_configured_app_now(repo_root: Path, relay_env: str) -> int:
+    config = app_deploy_config(environ={}, relay_env=relay_env)
+    if not config["configured"]:
+        print(str(config["reason"]), file=sys.stderr)
+        return 2
+    try:
+        version = _verified_committed_web_bundle(repo_root)
+        revision = git_output(repo_root, "rev-parse", "HEAD")
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(compact_error(exc), file=sys.stderr)
+        return 2
+    runtime_dir = Path(relay_env).expanduser().resolve().parent
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    job_path = runtime_dir / f"app-deploy-job-{int(time.time() * 1000)}.json"
+    write_json_atomic(job_path, {
+        "repo_root": str(repo_root.resolve()),
+        "runtime_dir": str(runtime_dir),
+        "relay_env": str(Path(relay_env).expanduser().resolve()),
+        "home": str(Path.home().resolve()),
+        "system": platform.system(),
+        "origin": str(config["origin"]),
+        "project": str(config["project"]),
+        "target_version": version,
+        "target_revision": revision,
+        "checked_at": int(time.time()),
+    })
+    result = run_app_deploy_job(job_path)
+    status = read_app_deploy_state(runtime_dir)
+    if result != 0:
+        print(str(status.get("error") or "App deployment failed"), file=sys.stderr)
+        return result
+    print(f"Published app version {version} to {config['origin']}")
+    return 0
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--run-job":
         raise SystemExit(run_update_job(Path(sys.argv[2])))
-    raise SystemExit(f"Usage: {Path(sys.argv[0]).name} --run-job JOB.json")
+    if len(sys.argv) == 3 and sys.argv[1] == "--run-app-deploy-job":
+        raise SystemExit(run_app_deploy_job(Path(sys.argv[2])))
+    if len(sys.argv) == 3 and sys.argv[1] == "--deploy-configured-app":
+        raise SystemExit(
+            deploy_configured_app_now(
+                Path(__file__).resolve().parent.parent,
+                sys.argv[2],
+            )
+        )
+    raise SystemExit(
+        f"Usage: {Path(sys.argv[0]).name} "
+        "{--run-job|--run-app-deploy-job|--deploy-configured-app} ARG"
+    )

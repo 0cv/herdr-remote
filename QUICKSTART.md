@@ -51,6 +51,14 @@ Repeat stable setup on each computer with a different hostname. Add each QR link
 
 After the stable service is running on version 0.7.0 or newer, Settings can check and install later versioned relay updates one computer at a time. An older relay shows **Update Help** with the one-time command to update and restart it. That Marketplace command preserves the configuration used by an existing checkout-installed service; the checkout command remains available for users who prefer to stay checkout-managed. A separately hosted phone app remains a separate deployment.
 
+The app also checks the committed upstream app release. Relay-hosted apps update with their relay. If you deliberately host one app separately on Cloudflare Pages, configure exactly one stable relay as its deployment owner:
+
+```bash
+herdr plugin action invoke configure-app-deploy --plugin herdr-mobile-relay.events
+```
+
+The action offers to deploy the current release immediately, which updates an older installed PWA that does not have the Deploy button yet. After that one-time bootstrap, **Settings → Deploy App** can publish later verified committed bundles and reload the phone only after the public origin reports the new version.
+
 Useful actions:
 
 ```bash

@@ -19,6 +19,9 @@ echo ""
 echo "  4. Remove Stable Tunnel"
 echo "     Tear down only resources recorded as wizard-owned."
 echo ""
+echo "  5. Configure App Deployment"
+echo "     Let this computer deploy one separately hosted Cloudflare Pages app."
+echo ""
 echo "  q. Exit"
 echo ""
 
@@ -37,11 +40,14 @@ while true; do
         4)
             exec "$SCRIPT_DIR/plugin-stable-teardown.sh"
             ;;
+        5)
+            exec "$SCRIPT_DIR/plugin-configure-app-deploy.sh"
+            ;;
         q|Q)
             exit 0
             ;;
         *)
-            echo "Enter 1, 2, 3, 4, or q."
+            echo "Enter 1, 2, 3, 4, 5, or q."
             ;;
     esac
 done

@@ -62,7 +62,7 @@
   const connected = $derived([...$connections.values()].filter((connection) => connection.status === 'connected').length);
   const connecting = $derived([...$connections.values()].some((connection) => connection.status === 'connecting'));
   const updateAvailable = $derived(
-    $appUpdates.state === 'available'
+    ['reload-ready', 'deployment-required'].includes($appUpdates.state)
       || [...$connections.values()].some((connection) => ['available', 'blocked'].includes(connection.update.state)),
   );
   const headerTitle = $derived.by(() => {
@@ -141,6 +141,19 @@
       if (relayServesCurrentOrigin(connection.relay.url)) {
         void reloadUpdatedSameOriginApp(pending.version);
       }
+    }
+  });
+
+  $effect(() => {
+    for (const connection of $connections.values()) {
+      const deployment = connection.appDeploy;
+      if (
+        connection.status !== 'connected'
+        || deployment.state !== 'succeeded'
+        || deployment.origin !== location.origin
+        || !deployment.target_version
+      ) continue;
+      void reloadUpdatedSameOriginApp(deployment.target_version);
     }
   });
 

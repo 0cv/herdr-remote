@@ -113,6 +113,7 @@ export interface RelayConnectionView {
   releaseVersion: string;
   revision: string;
   update: RelayUpdateStatus;
+  appDeploy: AppDeploymentStatus;
   capabilities: string[];
   agentProfiles: AgentProfile[];
   directoryBrowser: DirectoryListing | null;
@@ -142,6 +143,8 @@ export interface RelayUpdateStatus {
   available_version: string;
   available_revision: string;
   target_revision: string;
+  upstream_version: string;
+  upstream_revision: string;
   checked_at: number;
   can_install: boolean;
   mode: string;
@@ -149,12 +152,28 @@ export interface RelayUpdateStatus {
   error: string;
 }
 
+export interface AppDeploymentStatus {
+  configured: boolean;
+  origin: string;
+  project: string;
+  branch: string;
+  revision: string;
+  reason: string;
+  state: 'idle' | 'scheduled' | 'deploying' | 'succeeded' | 'failed';
+  target_version: string;
+  target_revision: string;
+  checked_at: number;
+  error: string;
+}
+
 export interface AppUpdateStatus {
-  state: 'checking' | 'current' | 'available' | 'failed';
+  state: 'checking' | 'current' | 'reload-ready' | 'deployment-required' | 'failed';
   currentVersion: string;
   currentAssets: number;
-  availableVersion: string;
-  availableAssets: number;
+  deployedVersion: string;
+  deployedAssets: number;
+  upstreamVersion: string;
+  upstreamAssets: number;
   checkedAt: number;
   error: string;
 }

@@ -1,6 +1,6 @@
 import { get, writable } from 'svelte/store';
-import { APP_ASSET_VERSION, APP_VERSION } from './config';
-import type { AppUpdateStatus, RelayUpdateStatus } from './types';
+import { APP_ASSET_VERSION, APP_VERSION, UPSTREAM_APP_VERSION_URL } from './config';
+import type { AppDeploymentStatus, AppUpdateStatus, RelayUpdateStatus } from './types';
 
 const APP_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 const PENDING_RELAY_UPDATES_KEY = 'herdr_pending_relay_updates';
@@ -22,8 +22,10 @@ export const appUpdateStatus = writable<AppUpdateStatus>({
   state: 'checking',
   currentVersion: APP_VERSION,
   currentAssets: APP_ASSET_VERSION,
-  availableVersion: '',
-  availableAssets: 0,
+  deployedVersion: '',
+  deployedAssets: 0,
+  upstreamVersion: '',
+  upstreamAssets: 0,
   checkedAt: 0,
   error: '',
 });
@@ -62,12 +64,47 @@ export function normalizeRelayUpdate(
     available_version: String(update.available_version || '').slice(0, 32),
     available_revision: String(update.available_revision || '').slice(0, 40),
     target_revision: String(update.target_revision || '').slice(0, 40),
+    upstream_version: String(update.upstream_version || update.available_version || '').slice(0, 32),
+    upstream_revision: String(update.upstream_revision || update.target_revision || '').slice(0, 40),
     checked_at: Number.isFinite(Number(update.checked_at)) ? Number(update.checked_at) : 0,
     can_install: update.can_install === true,
     mode: String(update.mode || '').slice(0, 20),
     reason: String(update.reason || '').slice(0, 500),
     error: String(update.error || '').slice(0, 500),
   };
+}
+
+export function normalizeAppDeployment(value: unknown): AppDeploymentStatus {
+  const deployment = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const state = ['idle', 'scheduled', 'deploying', 'succeeded', 'failed'].includes(String(deployment.state))
+    ? String(deployment.state) as AppDeploymentStatus['state']
+    : 'idle';
+  return {
+    configured: deployment.configured === true,
+    origin: String(deployment.origin || '').slice(0, 300),
+    project: String(deployment.project || '').slice(0, 80),
+    branch: String(deployment.branch || '').slice(0, 120),
+    revision: String(deployment.revision || '').slice(0, 40),
+    reason: String(deployment.reason || '').slice(0, 500),
+    state,
+    target_version: String(deployment.target_version || '').slice(0, 32),
+    target_revision: String(deployment.target_revision || '').slice(0, 40),
+    checked_at: Number.isFinite(Number(deployment.checked_at)) ? Number(deployment.checked_at) : 0,
+    error: String(deployment.error || '').slice(0, 500),
+  };
+}
+
+async function versionMetadata(
+  fetcher: typeof fetch,
+  url: string,
+): Promise<{ version: string; assets: number }> {
+  const response = await fetcher(url, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`version check returned HTTP ${response.status}`);
+  const payload = await response.json() as Record<string, unknown>;
+  const version = String(payload.version || '');
+  if (!semverTuple(version)) throw new Error('version metadata is invalid');
+  const assets = Number(payload.assets);
+  return { version, assets: Number.isInteger(assets) ? assets : 0 };
 }
 
 export async function checkAppUpdate(
@@ -78,18 +115,44 @@ export async function checkAppUpdate(
   appUpdateStatus.update((status) => ({ ...status, state: 'checking', error: '' }));
   checking = (async () => {
     try {
-      const response = await fetcher(`/version.json?check=${now}`, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`version check returned HTTP ${response.status}`);
-      const payload = await response.json() as Record<string, unknown>;
-      const availableVersion = String(payload.version || '');
-      if (!semverTuple(availableVersion)) throw new Error('version metadata is invalid');
-      const availableAssets = Number(payload.assets);
+      const [deployedResult, upstreamResult] = await Promise.allSettled([
+        versionMetadata(fetcher, `/version.json?check=${now}`),
+        versionMetadata(fetcher, `${UPSTREAM_APP_VERSION_URL}?check=${now}`),
+      ]);
+      if (deployedResult.status === 'rejected') throw deployedResult.reason;
+      const deployed = deployedResult.value;
+      if (upstreamResult.status === 'rejected') {
+        const error = upstreamResult.reason instanceof Error
+          ? upstreamResult.reason.message
+          : 'Could not check the upstream app version';
+        const status: AppUpdateStatus = {
+          state: newerVersion(deployed.version, APP_VERSION) ? 'reload-ready' : 'failed',
+          currentVersion: APP_VERSION,
+          currentAssets: APP_ASSET_VERSION,
+          deployedVersion: deployed.version,
+          deployedAssets: deployed.assets,
+          upstreamVersion: '',
+          upstreamAssets: 0,
+          checkedAt: now,
+          error,
+        };
+        appUpdateStatus.set(status);
+        return status;
+      }
+      const upstream = upstreamResult.value;
+      const state = newerVersion(deployed.version, APP_VERSION)
+        ? 'reload-ready'
+        : newerVersion(upstream.version, deployed.version)
+          ? 'deployment-required'
+          : 'current';
       const status: AppUpdateStatus = {
-        state: newerVersion(availableVersion, APP_VERSION) ? 'available' : 'current',
+        state,
         currentVersion: APP_VERSION,
         currentAssets: APP_ASSET_VERSION,
-        availableVersion,
-        availableAssets: Number.isInteger(availableAssets) ? availableAssets : 0,
+        deployedVersion: deployed.version,
+        deployedAssets: deployed.assets,
+        upstreamVersion: upstream.version,
+        upstreamAssets: upstream.assets,
         checkedAt: now,
         error: '',
       };
@@ -172,7 +235,7 @@ export function relayServesCurrentOrigin(relayUrl: string): boolean {
 export async function reloadUpdatedSameOriginApp(version: string): Promise<boolean> {
   if (sessionStorage.getItem(AUTO_RELOAD_VERSION_KEY) === version) return false;
   const status = await checkAppUpdate();
-  if (status.state !== 'available' || status.availableVersion !== version) return false;
+  if (status.state !== 'reload-ready' || status.deployedVersion !== version) return false;
   sessionStorage.setItem(AUTO_RELOAD_VERSION_KEY, version);
   location.reload();
   return true;

@@ -4,7 +4,7 @@
 
 A remote control for [Herdr](https://herdr.dev) agents on Linux and macOS: use your smartphone to monitor status, answer prompts, build plans, and manage their lifecycle.
 
-**Current version:** `0.8.0`
+**Current version:** `0.8.1`
 
 Each computer runs its own local relay. The phone app connects to those relays directly and merges their agents; there is no central broker and the computers do not connect to each other.
 
@@ -82,6 +82,7 @@ Useful plugin actions:
 ```bash
 herdr plugin action invoke setup-link --plugin herdr-mobile-relay.events
 herdr plugin action invoke status --plugin herdr-mobile-relay.events
+herdr plugin action invoke configure-app-deploy --plugin herdr-mobile-relay.events
 herdr plugin action invoke stable-teardown --plugin herdr-mobile-relay.events
 ```
 
@@ -139,7 +140,17 @@ An update is offered only when the `main` branch publishes a higher semantic ver
 
 Marketplace-managed plugins and clean local checkouts on the canonical `main` branch can update automatically. A local checkout with uncommitted changes, another origin, another branch, or no matching stable background service is reported as blocked instead of being modified. Each relay is updated separately.
 
-The **About** card checks the `version.json` deployed by the app’s current web origin. If the relay also serves that origin, a verified relay update reloads the app automatically. A separately hosted app, such as Cloudflare Pages, remains a separate deployment and must be reloaded only after that origin publishes the new bundle.
+The **About** card checks both the `version.json` deployed by the app’s current web origin and the committed upstream release. It distinguishes an app that is ready to reload from an origin that has not deployed the upstream bundle yet; an old host is never described as the latest version.
+
+If a relay serves the app origin, a verified relay update publishes the bundled app and reloads it automatically. A separately hosted Cloudflare Pages app needs one computer to own its deployment. On that stable relay, install Node.js 24, authenticate Wrangler as the service user (or configure a narrowly scoped Pages API token), then run:
+
+```bash
+herdr plugin action invoke configure-app-deploy --plugin herdr-mobile-relay.events
+```
+
+The action verifies the selected Pages project and custom domain, records the exact production branch and local tool paths in the private relay environment, restarts the relay, and offers to publish the current app immediately. That first local deployment bootstraps older installed PWAs that do not have the phone-side Deploy button yet.
+
+For later releases, Settings first asks you to update that deployment-owner relay. **Deploy App** then confirms an exact installed version and Git revision, refuses modified release assets, validates the committed `web/` bundle, deploys only to the configured project and `main` branch, verifies the public `version.json`, and reloads the PWA. Cloudflare credentials never go to the phone. Configure only one deployment owner per app origin to avoid competing releases.
 
 ## How It Works
 
@@ -260,7 +271,7 @@ make web-release
 make web-release-check
 ```
 
-`make web-deploy` deploys the already committed bundle and never rebuilds it. See [Web Release and Rollback](docs/WEB_RELEASE.md) for staging, cutover, and recovery.
+`make web-deploy` deploys the already committed bundle and never rebuilds it. It targets the `main` production branch by default even when invoked from another local Git branch; use `WEB_BRANCH=<branch>` only for an intentional preview.
 
 ## Troubleshooting
 

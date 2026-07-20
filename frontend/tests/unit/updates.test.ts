@@ -6,6 +6,7 @@ import {
   checkAppUpdate,
   clearPendingRelayUpdate,
   newerVersion,
+  normalizeAppDeployment,
   normalizeRelayUpdate,
   pendingRelayUpdate,
   rememberPendingRelayUpdate,
@@ -46,21 +47,79 @@ describe('release updates', () => {
   it('detects a newer bundle from no-cache version metadata', async () => {
     const [major, minor, patch] = semverTuple(APP_VERSION)!;
     const available = `${major}.${minor + 1}.${patch}`;
+    const fetcher = vi.fn().mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => url.startsWith('/version.json')
+        ? { version: APP_VERSION, assets: 68 }
+        : { version: available, assets: 999 },
+    }));
+
+    const status = await checkAppUpdate(fetcher, 123);
+
+    expect(fetcher).toHaveBeenCalledWith('/version.json?check=123', { cache: 'no-store' });
+    expect(fetcher).toHaveBeenCalledWith(
+      expect.stringContaining('raw.githubusercontent.com/0cv/herdr-mobile-relay/main/web/version.json?check=123'),
+      { cache: 'no-store' },
+    );
+    expect(status).toMatchObject({
+      state: 'deployment-required',
+      deployedVersion: APP_VERSION,
+      upstreamVersion: available,
+      upstreamAssets: 999,
+      checkedAt: 123,
+    });
+    expect(get(appUpdateStatus).state).toBe('deployment-required');
+  });
+
+  it('only offers reload after the app origin has published the upstream bundle', async () => {
+    const [major, minor, patch] = semverTuple(APP_VERSION)!;
+    const available = `${major}.${minor + 1}.${patch}`;
     const fetcher = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ version: available, assets: 999 }),
     });
 
-    const status = await checkAppUpdate(fetcher, 123);
-
-    expect(fetcher).toHaveBeenCalledWith('/version.json?check=123', { cache: 'no-store' });
-    expect(status).toMatchObject({
-      state: 'available',
-      availableVersion: available,
-      availableAssets: 999,
-      checkedAt: 123,
+    expect(await checkAppUpdate(fetcher, 124)).toMatchObject({
+      state: 'reload-ready',
+      deployedVersion: available,
+      upstreamVersion: available,
     });
-    expect(get(appUpdateStatus).state).toBe('available');
+  });
+
+  it('still reloads a newer origin bundle when the upstream check is unavailable', async () => {
+    const [major, minor, patch] = semverTuple(APP_VERSION)!;
+    const available = `${major}.${minor + 1}.${patch}`;
+    const fetcher = vi.fn().mockImplementation(async (url: string) => {
+      if (!url.startsWith('/version.json')) throw new Error('GitHub unavailable');
+      return {
+        ok: true,
+        json: async () => ({ version: available, assets: 999 }),
+      };
+    });
+
+    expect(await checkAppUpdate(fetcher, 125)).toMatchObject({
+      state: 'reload-ready',
+      deployedVersion: available,
+      upstreamVersion: '',
+      error: 'GitHub unavailable',
+    });
+  });
+
+  it('normalizes app deployment metadata without exposing unknown fields', () => {
+    expect(normalizeAppDeployment({
+      configured: true,
+      origin: 'https://app.example.test',
+      project: 'herdr-app',
+      branch: 'main',
+      revision: 'f'.repeat(40),
+      state: 'deploying',
+      secret: 'do-not-copy',
+    })).toEqual(expect.objectContaining({
+      configured: true,
+      origin: 'https://app.example.test',
+      state: 'deploying',
+    }));
+    expect(normalizeAppDeployment({ state: 'anything' }).state).toBe('idle');
   });
 
   it('keeps relay update targets across a deliberate reconnect', () => {

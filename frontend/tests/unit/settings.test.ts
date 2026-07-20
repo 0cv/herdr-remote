@@ -2,8 +2,15 @@ import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from '$components/SettingsView.svelte';
-import { PUSH_ENABLED_KEY, STATUS_LINE_KEY, TERMINAL_HISTORY_KEY } from '$lib/config';
+import {
+  APP_ASSET_VERSION,
+  APP_VERSION,
+  PUSH_ENABLED_KEY,
+  STATUS_LINE_KEY,
+  TERMINAL_HISTORY_KEY,
+} from '$lib/config';
 import { relayStore } from '$lib/store';
+import { appUpdateStatus } from '$lib/updates';
 
 class MockWebSocket {
   static OPEN = 1;
@@ -41,6 +48,17 @@ describe('settings relay status', () => {
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {} });
     relayStore.destroy();
     relayStore.relayConfigs.set([]);
+    appUpdateStatus.set({
+      state: 'current',
+      currentVersion: APP_VERSION,
+      currentAssets: APP_ASSET_VERSION,
+      deployedVersion: APP_VERSION,
+      deployedAssets: APP_ASSET_VERSION,
+      upstreamVersion: APP_VERSION,
+      upstreamAssets: APP_ASSET_VERSION,
+      checkedAt: 123,
+      error: '',
+    });
     relayStore.addRelay({ label: 'Fedora', url: 'wss://fedora.example', token: 'secret' });
   });
 
@@ -198,6 +216,53 @@ describe('settings relay status', () => {
       ok: true,
       phase: 'scheduled',
       data: { update: { state: 'scheduled', target_revision: 'f'.repeat(40) } },
+    });
+  });
+
+  it('confirms a separate app deployment through its authorized relay', async () => {
+    const user = userEvent.setup();
+    appUpdateStatus.set({
+      state: 'deployment-required',
+      currentVersion: APP_VERSION,
+      currentAssets: APP_ASSET_VERSION,
+      deployedVersion: APP_VERSION,
+      deployedAssets: APP_ASSET_VERSION,
+      upstreamVersion: '9.0.0',
+      upstreamAssets: 999,
+      checkedAt: 123,
+      error: '',
+    });
+    render(SettingsView);
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.server({
+      type: 'push_config',
+      protocol: 2,
+      release_version: '9.0.0',
+      revision: 'abc123',
+      capabilities: ['self_update', 'app_deploy'],
+      agent_profiles: [],
+      app_deploy: {
+        configured: true,
+        origin: location.origin,
+        project: 'herdr-app',
+        branch: 'main',
+        revision: 'f'.repeat(40),
+        state: 'idle',
+      },
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Deploy App' }));
+    const dialog = screen.getByRole('dialog', { name: 'Deploy Phone App' });
+    expect(dialog).toHaveTextContent(`Deploy app version 9.0.0 from Fedora to ${location.origin}?`);
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy App' }));
+    const command = socket.sent.map((payload) => JSON.parse(payload))
+      .find((message) => message.type === 'deploy_app_update');
+
+    expect(command).toMatchObject({
+      expected_version: '9.0.0',
+      expected_revision: 'f'.repeat(40),
+      expected_origin: location.origin,
     });
   });
 });

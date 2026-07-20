@@ -28,18 +28,28 @@ from pathlib import Path
 
 try:
     from update_support import (
+        app_deploy_config,
+        app_deploy_state_file,
         check_for_update,
+        git_output,
+        launch_app_deploy_job,
         launch_update_job,
         product_version,
+        read_app_deploy_state,
         read_update_state,
         state_file,
         write_json_atomic,
     )
 except ModuleNotFoundError:
     from relay.update_support import (
+        app_deploy_config,
+        app_deploy_state_file,
         check_for_update,
+        git_output,
+        launch_app_deploy_job,
         launch_update_job,
         product_version,
+        read_app_deploy_state,
         read_update_state,
         state_file,
         write_json_atomic,
@@ -296,6 +306,7 @@ MUTATING_MESSAGE_TYPES = frozenset({
     "agent_clear",
     "agent_restart",
     "acknowledge_pane",
+    "deploy_app_update",
     "install_update",
     "upload_image",
 })
@@ -462,7 +473,23 @@ RELAY_VERSION = detect_relay_version()
 RELEASE_VERSION = product_version(REPO_ROOT)
 UPDATE_CHECK_INTERVAL = 24 * 60 * 60
 UPDATE_STATUS = read_update_state(RUNTIME_DIR, RELEASE_VERSION, RELAY_VERSION)
+APP_DEPLOY_CONFIG = app_deploy_config(
+    relay_env=os.environ.get("HERDR_RELAY_ENV", ""),
+)
+try:
+    APP_DEPLOY_REVISION = git_output(REPO_ROOT, "rev-parse", "HEAD")
+except Exception:
+    APP_DEPLOY_REVISION = ""
+if APP_DEPLOY_CONFIG["configured"] and not APP_DEPLOY_REVISION:
+    APP_DEPLOY_CONFIG = APP_DEPLOY_CONFIG | {
+        "configured": False,
+        "reason": "The installed release has no verifiable Git revision",
+    }
+APP_DEPLOY_STATUS = read_app_deploy_state(RUNTIME_DIR)
+if APP_DEPLOY_CONFIG["configured"] and "app_deploy" not in RELAY_CAPABILITIES:
+    RELAY_CAPABILITIES.append("app_deploy")
 update_check_lock = asyncio.Lock()
+app_deploy_lock = asyncio.Lock()
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
@@ -2779,6 +2806,8 @@ def public_update_status(status=None):
             ("available_version", ""),
             ("available_revision", ""),
             ("target_revision", ""),
+            ("upstream_version", ""),
+            ("upstream_revision", ""),
             ("checked_at", 0),
             ("can_install", False),
             ("mode", ""),
@@ -2790,6 +2819,35 @@ def public_update_status(status=None):
 
 async def publish_update_status():
     await broadcast({"type": "update_status", "update": public_update_status()})
+
+
+def public_app_deploy_status(status=None):
+    source = status if isinstance(status, dict) else APP_DEPLOY_STATUS
+    return {
+        "configured": APP_DEPLOY_CONFIG["configured"],
+        "origin": APP_DEPLOY_CONFIG["origin"],
+        "project": APP_DEPLOY_CONFIG["project"],
+        "branch": APP_DEPLOY_CONFIG["branch"],
+        "revision": APP_DEPLOY_REVISION if APP_DEPLOY_CONFIG["configured"] else "",
+        "reason": APP_DEPLOY_CONFIG["reason"],
+        **{
+            key: source.get(key, default)
+            for key, default in (
+                ("state", "idle"),
+                ("target_version", ""),
+                ("target_revision", ""),
+                ("checked_at", 0),
+                ("error", ""),
+            )
+        },
+    }
+
+
+async def publish_app_deploy_status():
+    await broadcast({
+        "type": "app_deploy_status",
+        "app_deploy": public_app_deploy_status(),
+    })
 
 
 async def refresh_update_status():
@@ -2841,6 +2899,20 @@ async def update_state_watch_loop():
         await publish_update_status()
 
 
+async def app_deploy_state_watch_loop():
+    global APP_DEPLOY_STATUS
+    previous = json.dumps(public_app_deploy_status(), sort_keys=True)
+    while True:
+        await asyncio.sleep(1)
+        loaded = await asyncio.to_thread(read_app_deploy_state, RUNTIME_DIR)
+        serialized = json.dumps(public_app_deploy_status(loaded), sort_keys=True)
+        if serialized == previous:
+            continue
+        APP_DEPLOY_STATUS = loaded
+        previous = serialized
+        await publish_app_deploy_status()
+
+
 async def handle_check_update_command(ws, msg):
     status = await refresh_update_status()
     await send_command_result(
@@ -2849,6 +2921,82 @@ async def handle_check_update_command(ws, msg):
         "check_update",
         True,
         data={"update": public_update_status(status)},
+    )
+
+
+async def handle_deploy_app_update_command(ws, msg):
+    global APP_DEPLOY_STATUS
+    request_id = request_id_for(msg)
+    if not APP_DEPLOY_CONFIG["configured"]:
+        await send_command_result(
+            ws,
+            request_id,
+            "deploy_app_update",
+            False,
+            phase="failed",
+            error=str(APP_DEPLOY_CONFIG["reason"]),
+            data={"app_deploy": public_app_deploy_status()},
+        )
+        return
+    if app_deploy_lock.locked() or APP_DEPLOY_STATUS.get("state") in {"scheduled", "deploying"}:
+        await send_command_result(
+            ws,
+            request_id,
+            "deploy_app_update",
+            False,
+            phase="failed",
+            error="An app deployment is already running",
+            data={"app_deploy": public_app_deploy_status()},
+        )
+        return
+    expected_version = str(msg.get("expected_version") or "")
+    expected_revision = str(msg.get("expected_revision") or "")
+    expected_origin = str(msg.get("expected_origin") or "")
+    scheduled = {
+        "state": "scheduled",
+        "target_version": expected_version,
+        "target_revision": expected_revision,
+        "checked_at": int(time.time()),
+        "error": "",
+    }
+    async with app_deploy_lock:
+        try:
+            write_json_atomic(app_deploy_state_file(RUNTIME_DIR), scheduled)
+            APP_DEPLOY_STATUS = scheduled
+            await publish_app_deploy_status()
+            job = await asyncio.to_thread(
+                launch_app_deploy_job,
+                REPO_ROOT,
+                RUNTIME_DIR,
+                os.environ.get("HERDR_RELAY_ENV", ""),
+                expected_version,
+                expected_revision,
+                expected_origin,
+            )
+        except Exception as exc:
+            APP_DEPLOY_STATUS = scheduled | {
+                "state": "failed",
+                "error": compact_text(str(exc), 500),
+            }
+            write_json_atomic(app_deploy_state_file(RUNTIME_DIR), APP_DEPLOY_STATUS)
+            await publish_app_deploy_status()
+            await send_command_result(
+                ws,
+                request_id,
+                "deploy_app_update",
+                False,
+                phase="failed",
+                error=APP_DEPLOY_STATUS["error"],
+                data={"app_deploy": public_app_deploy_status()},
+            )
+            return
+    await send_command_result(
+        ws,
+        request_id,
+        "deploy_app_update",
+        True,
+        phase="scheduled",
+        data={"job": job, "app_deploy": public_app_deploy_status()},
     )
 
 
@@ -4573,6 +4721,7 @@ async def handle_client(ws):
             "release_version": RELEASE_VERSION,
             "revision": RELAY_VERSION,
             "update": public_update_status(),
+            "app_deploy": public_app_deploy_status(),
             "capabilities": RELAY_CAPABILITIES,
             "agent_profiles": [
                 {"id": profile["id"], "label": profile["label"]}
@@ -4602,6 +4751,8 @@ async def handle_client(ws):
                 continue
             if msg_type == "check_update":
                 await handle_check_update_command(ws, msg)
+            elif msg_type == "deploy_app_update":
+                await handle_deploy_app_update_command(ws, msg)
             elif msg_type == "install_update":
                 await handle_install_update_command(ws, msg)
             elif msg_type == "answer_question":
@@ -4797,6 +4948,7 @@ async def main():
     asyncio.create_task(prune_uploads_loop())
     asyncio.create_task(update_check_loop())
     asyncio.create_task(update_state_watch_loop())
+    asyncio.create_task(app_deploy_state_watch_loop())
     server = await serve(handle_client, WS_HOST, WS_PORT, process_request=process_request, max_size=WS_MAX_SIZE)
     print(f"Herdr Mobile Relay {RELAY_VERSION} on {WS_HOST}:{WS_PORT} (WebSocket + phone app)")
     print(f"  polling: {LOCAL_HOST}")

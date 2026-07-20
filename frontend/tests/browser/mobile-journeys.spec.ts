@@ -1,4 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const webRoot = process.env.HERDR_WEB_ROOT || 'dist';
+const APP_METADATA = JSON.parse(
+  readFileSync(resolve(webRoot, 'version.json'), 'utf8'),
+) as { version: string; assets: number };
+const APP_RELEASE = APP_METADATA.version;
 
 interface RelayFixture {
   id: string;
@@ -9,9 +17,18 @@ interface RelayFixture {
 
 interface BootOptions {
   standalone?: boolean;
+  upstreamVersion?: string;
 }
 
 async function boot(page: Page, relays: RelayFixture[] = [], path = '/', options: BootOptions = {}) {
+  await page.route('https://raw.githubusercontent.com/0cv/herdr-mobile-relay/main/web/version.json*', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        version: options.upstreamVersion || APP_RELEASE,
+        assets: APP_METADATA.assets,
+      }),
+    }));
   await page.addInitScript(({ savedRelays, standalone }) => {
     if (savedRelays.length) localStorage.setItem('herdr_relays', JSON.stringify(savedRelays));
     if (standalone) {
@@ -277,7 +294,7 @@ test('confirms and tracks one relay update through its verified reconnect', asyn
 
   await page.getByRole('button', { name: 'Settings, update available' }).click();
   await expect(page.getByText('Update v0.8.0 available')).toBeVisible();
-  await expect(page.getByText('Phone app version 0.8.0')).toBeVisible();
+  await expect(page.getByText(`Phone app version ${APP_RELEASE}`)).toBeVisible();
   await page.getByRole('button', { name: 'Update Fedora to version 0.8.0' }).click();
   const dialog = page.getByRole('dialog', { name: 'Update Relay' });
   await expect(dialog).toContainText('Update Fedora from v0.7.0 to v0.8.0?');
@@ -340,6 +357,39 @@ test('confirms and tracks one relay update through its verified reconnect', asyn
 
   await expect(page.getByRole('status').filter({ hasText: 'Fedora updated to v0.8.0.' })).toBeVisible();
   await expect(page.getByText('Update installed')).toBeVisible();
+});
+
+test('confirms deployment when an authorized relay has the upstream app bundle', async ({ page }) => {
+  await boot(page, [fedora], '/', { upstreamVersion: '9.0.0' });
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0, {
+    release_version: '9.0.0',
+    revision: 'abc1234',
+    capabilities: ['directory_browser', 'self_update', 'app_deploy'],
+    app_deploy: {
+      configured: true,
+      origin: 'http://127.0.0.1:4173',
+      project: 'herdr-app',
+      branch: 'main',
+      revision: 'f'.repeat(40),
+      state: 'idle',
+    },
+  });
+
+  await page.getByRole('button', { name: /Settings/ }).click();
+  await expect(page.getByText(`Version 9.0.0 is released, but this app origin still serves ${APP_RELEASE}.`)).toBeVisible();
+  await page.getByRole('button', { name: 'Deploy App' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Deploy Phone App' });
+  await expect(dialog).toContainText('Deploy app version 9.0.0 from Fedora');
+  await dialog.getByRole('button', { name: 'Deploy App' }).click();
+
+  await expect.poll(async () =>
+    (await commands(page)).some((command) => command.type === 'deploy_app_update')).toBe(true);
+  expect((await commands(page)).find((command) => command.type === 'deploy_app_update')).toMatchObject({
+    expected_version: '9.0.0',
+    expected_revision: 'f'.repeat(40),
+    expected_origin: 'http://127.0.0.1:4173',
+  });
 });
 
 test('resets drafts and terminal output when moving to another agent', async ({ page }) => {

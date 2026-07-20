@@ -4,10 +4,12 @@ export
 endif
 
 WEB_PROJECT ?= herdr-mobile-relay
+WEB_BRANCH ?= main
+WRANGLER_VERSION ?= 4.112.0
 PATH := /opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$(HOME)/.local/bin:$(PATH)
 export PATH
 
-.PHONY: help setup setup-link rotate-token quick-start dev-tunnel stable-setup stable-teardown check backend-check frontend-check frontend-browser frontend-browser-release test relay-run relay-plugin service-install service-uninstall service-status service-logs macos-service-install macos-service-uninstall macos-service-status macos-service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-bundle-check web-release web-release-check web-deploy web-preview
+.PHONY: help setup setup-link app-deploy-setup rotate-token quick-start dev-tunnel stable-setup stable-teardown check backend-check frontend-check frontend-browser frontend-browser-release test relay-run relay-plugin service-install service-uninstall service-status service-logs macos-service-install macos-service-uninstall macos-service-status macos-service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-bundle-check web-release web-release-check web-deploy web-preview
 
 help:
 	@echo "Common targets:"
@@ -20,6 +22,7 @@ help:
 	@echo "  make web-release                Replace ./web with a verified frontend release build"
 	@echo "  make service-install            Install/start the relay service for this platform"
 	@echo "  make setup-link                 Print the phone setup link and QR code for a stable relay"
+	@echo "  make app-deploy-setup           Authorize this relay to deploy a separate Pages app"
 	@echo "    APP_URL=app.example.com       One-time installed-PWA origin override"
 	@echo "  make rotate-token               Replace the relay token and print a new setup link"
 	@echo "  make service-status             Show relay service status"
@@ -33,6 +36,9 @@ setup:
 
 setup-link:
 	HERDR_PHONE_APP_URL="$(APP_URL)" relay/setup-link.sh $(HOST)
+
+app-deploy-setup:
+	relay/configure-app-deploy.sh
 
 rotate-token:
 	relay/rotate-token.sh
@@ -134,7 +140,7 @@ web-release: frontend-check
 web-release-check: web-bundle-check frontend-browser-release
 
 web-deploy: web-bundle-check
-	npx wrangler pages deploy web --project-name "$(WEB_PROJECT)"
+	npx --yes wrangler@$(WRANGLER_VERSION) pages deploy web --project-name "$(WEB_PROJECT)" --branch "$(WEB_BRANCH)"
 
 web-preview:
 	npx wrangler pages dev web
