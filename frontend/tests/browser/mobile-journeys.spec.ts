@@ -338,7 +338,18 @@ test('confirms and tracks one relay update through its verified reconnect', asyn
   });
   await expect(page.getByText('Update scheduled…')).toBeVisible();
 
-  await page.evaluate(() => (window as any).__relayClose(0));
+  await server(page, 0, {
+    type: 'update_status',
+    update: {
+      state: 'restarting',
+      current_version: '0.7.0',
+      current_revision: 'abc1234',
+      available_version: '0.8.0',
+      target_revision: 'f'.repeat(40),
+      mode: 'local',
+    },
+  });
+  await expect(page.getByText('Restarting relay…')).toBeVisible();
   await expect.poll(() => socketCount(page)).toBe(2);
   await handshake(page, 1, {
     host: 'fedora',

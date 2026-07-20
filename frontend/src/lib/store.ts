@@ -41,6 +41,7 @@ import type {
 const COMMAND_TIMEOUT_MS = 15_000;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const CONNECTION_HEALTH_TIMEOUT_MS = 10_000;
+const UPDATE_RESTART_RECONNECT_DELAY_MS = 1_000;
 const RECONNECT_BASE_DELAY_MS = 3_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
 const IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
@@ -49,6 +50,7 @@ interface RelayConnection extends RelayConnectionView {
   ws: WebSocket | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   healthTimer: ReturnType<typeof setTimeout> | null;
+  updateRestartTimer: ReturnType<typeof setTimeout> | null;
   closed: boolean;
 }
 
@@ -193,6 +195,7 @@ class RelayStore {
       status: 'connecting',
       reconnectTimer: null,
       healthTimer: null,
+      updateRestartTimer: null,
       closed: false,
       agentProfiles: [],
       capabilities: [],
@@ -269,6 +272,7 @@ class RelayStore {
     connection.closed = true;
     if (connection.reconnectTimer) clearTimeout(connection.reconnectTimer);
     this.clearHealthTimer(connection);
+    this.clearUpdateRestartTimer(connection);
     connection.ws?.close();
     this.rejectPendingOperations(id, 'Relay disconnected');
     this.connectionsValue.delete(id);
@@ -310,6 +314,26 @@ class RelayStore {
     connection.healthTimer = null;
   }
 
+  private syncUpdateRestartReconnect(relayId: string, connection: RelayConnection): void {
+    if (connection.update.state !== 'restarting') {
+      this.clearUpdateRestartTimer(connection);
+      return;
+    }
+    if (connection.closed || connection.updateRestartTimer) return;
+    if (!this.isCurrentConnection(relayId, connection)) return;
+    connection.updateRestartTimer = setTimeout(() => {
+      if (!this.isCurrentConnection(relayId, connection)) return;
+      connection.updateRestartTimer = null;
+      this.connectRelay(connection.relay);
+    }, UPDATE_RESTART_RECONNECT_DELAY_MS);
+  }
+
+  private clearUpdateRestartTimer(connection: RelayConnection): void {
+    if (!connection.updateRestartTimer) return;
+    clearTimeout(connection.updateRestartTimer);
+    connection.updateRestartTimer = null;
+  }
+
   private scheduleReconnect(relay: RelayConfig, connection: RelayConnection): void {
     if (connection.closed || !this.reconnectEnabled || connection.reconnectTimer) return;
     if (!this.isCurrentConnection(relay.id, connection)) return;
@@ -343,6 +367,7 @@ class RelayStore {
         connection.releaseVersion,
         connection.revision,
       );
+      this.syncUpdateRestartReconnect(relayId, connection);
       connection.appDeploy = normalizeAppDeployment(message.app_deploy);
       connection.capabilities = Array.isArray(message.capabilities) ? message.capabilities.filter(Boolean) : [];
       connection.agentProfiles = Array.isArray(message.agent_profiles)
@@ -358,6 +383,7 @@ class RelayStore {
         connection.releaseVersion,
         connection.revision,
       );
+      this.syncUpdateRestartReconnect(relayId, connection);
       if (['failed', 'rolled_back'].includes(connection.update.state)) {
         clearPendingRelayUpdate(relayId);
       }

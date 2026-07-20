@@ -1587,6 +1587,69 @@ Production-like verification.
         self.assertIn("Reusing the installed relay configuration", result.stdout)
         self.assertIn(f"resolved={relay_env}", result.stdout)
 
+    def test_app_deploy_setup_preselects_the_only_project_and_retries_typos(self):
+        root = RELAY_PATH.parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            home = temp / "home"
+            home.mkdir()
+            relay_dir = temp / "relay"
+            relay_dir.mkdir()
+            for name in ("configure-app-deploy.sh", "common.sh"):
+                source = root / "relay" / name
+                target = relay_dir / name
+                target.write_text(source.read_text())
+                target.chmod(0o700)
+            service = relay_dir / "service.sh"
+            service.write_text("#!/bin/sh\necho service-installed\n")
+            service.chmod(0o700)
+            (temp / "herdr-plugin.toml").write_text('version = "0.8.1"\n')
+            relay_env = relay_dir / ".env"
+            relay_env.write_text(
+                "HERDR_RELAY_TOKEN='test-token'\n"
+                "HERDR_RELAY_INSTANCE_ID='test-instance'\n"
+            )
+            bin_dir = temp / "bin"
+            bin_dir.mkdir()
+            node = bin_dir / "node"
+            node.write_text("#!/bin/sh\necho v24.18.0\n")
+            node.chmod(0o700)
+            npx = bin_dir / "npx"
+            npx.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' "
+                "'[{\"Project Name\":\"herdr-0cv\","
+                "\"Project Domains\":\"herdr-0cv.pages.dev, herdr.example.test\"}]'\n"
+            )
+            npx.chmod(0o700)
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "HERDR_RELAY_ENV": str(relay_env),
+                "PATH": f"{bin_dir}:{env['PATH']}",
+            })
+
+            result = subprocess.run(
+                ["bash", str(relay_dir / "configure-app-deploy.sh")],
+                input="herdr.example.test\nmistyped\n\nn\n",
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            configured = relay_env.read_text()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Project not available", result.stdout)
+        self.assertIn("service-installed", result.stdout)
+        self.assertIn(
+            "HERDR_CLOUDFLARE_PAGES_PROJECT='herdr-0cv'",
+            configured,
+        )
+        self.assertIn(
+            "HERDR_APP_DEPLOY_ORIGIN='https://herdr.example.test'",
+            configured,
+        )
+
     def test_relay_health_check_retries_until_detailed_health_is_ready(self):
         root = RELAY_PATH.parents[1]
         with tempfile.TemporaryDirectory() as temp_dir:

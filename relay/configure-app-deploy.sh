@@ -84,14 +84,65 @@ if [ -z "$PROJECT_NAMES" ]; then
     exit 1
 fi
 echo "$PROJECT_NAMES"
-echo ""
-read -r -p "Pages project name: " PAGES_PROJECT
-if ! printf '%s' "$PAGES_PROJECT" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,57}[a-z0-9])?$'; then
-    echo "✗ Invalid Cloudflare Pages project name." >&2
-    exit 1
+
+AVAILABLE_PROJECTS="$(
+    printf '%s' "$PROJECTS_JSON" | uv run python -c '
+import json
+import sys
+
+projects = json.load(sys.stdin)
+for project in projects if isinstance(projects, list) else []:
+    name = str(project.get("Project Name", "")).strip()
+    if name:
+        print(name)
+'
+)"
+MATCHING_PROJECTS="$(
+    printf '%s' "$PROJECTS_JSON" | uv run python -c '
+import json
+import sys
+import urllib.parse
+
+origin = sys.argv[1]
+host = (urllib.parse.urlsplit(origin).hostname or "").lower()
+projects = json.load(sys.stdin)
+for project in projects if isinstance(projects, list) else []:
+    name = str(project.get("Project Name", "")).strip()
+    domains = {
+        domain.strip().lower()
+        for domain in str(project.get("Project Domains", "")).split(",")
+    }
+    if name and host in domains:
+        print(name)
+' "$APP_ORIGIN"
+)"
+
+DEFAULT_PROJECT=""
+if [ -n "${HERDR_CLOUDFLARE_PAGES_PROJECT:-}" ] \
+    && printf '%s\n' "$MATCHING_PROJECTS" \
+        | grep -Fxq "$HERDR_CLOUDFLARE_PAGES_PROJECT"; then
+    DEFAULT_PROJECT="$HERDR_CLOUDFLARE_PAGES_PROJECT"
+elif [ "$(printf '%s\n' "$MATCHING_PROJECTS" | sed '/^$/d' | wc -l)" -eq 1 ]; then
+    DEFAULT_PROJECT="$(printf '%s\n' "$MATCHING_PROJECTS" | sed -n '1p')"
+elif [ "$(printf '%s\n' "$AVAILABLE_PROJECTS" | sed '/^$/d' | wc -l)" -eq 1 ]; then
+    DEFAULT_PROJECT="$(printf '%s\n' "$AVAILABLE_PROJECTS" | sed -n '1p')"
 fi
 
-if printf '%s' "$PROJECTS_JSON" | uv run python -c '
+echo ""
+while true; do
+    if [ -n "$DEFAULT_PROJECT" ]; then
+        read -r -p "Pages project [$DEFAULT_PROJECT]: " PAGES_PROJECT
+        PAGES_PROJECT="${PAGES_PROJECT:-$DEFAULT_PROJECT}"
+    else
+        read -r -p "Pages project name: " PAGES_PROJECT
+    fi
+    if ! printf '%s' "$PAGES_PROJECT" \
+        | grep -Eq '^[a-z0-9]([a-z0-9-]{0,57}[a-z0-9])?$'; then
+        echo "Project not available. Enter one of the project names shown above."
+        continue
+    fi
+
+    if printf '%s' "$PROJECTS_JSON" | uv run python -c '
 import json
 import sys
 import urllib.parse
@@ -112,16 +163,16 @@ domains = {
 if host not in domains:
     raise SystemExit(2)
 ' "$PAGES_PROJECT" "$APP_ORIGIN"; then
-    :
-else
-    result=$?
-    if [ "$result" -eq 1 ]; then
-        echo "✗ That Pages project was not returned by Wrangler." >&2
-        exit 1
+        break
+    else
+        result=$?
     fi
-    echo "✗ $APP_ORIGIN is not listed as a domain of $PAGES_PROJECT." >&2
-    exit 1
-fi
+    if [ "$result" -eq 1 ]; then
+        echo "Project not available. Enter one of the project names shown above."
+        continue
+    fi
+    echo "$PAGES_PROJECT does not serve $APP_ORIGIN. Choose a project that lists that domain."
+done
 
 set_env_value_atomic "$ENV_FILE" HERDR_APP_DEPLOY_ORIGIN "$APP_ORIGIN"
 set_env_value_atomic "$ENV_FILE" HERDR_CLOUDFLARE_PAGES_PROJECT "$PAGES_PROJECT"

@@ -313,6 +313,39 @@ describe('relay command store', () => {
     expect(MockWebSocket.instances).toHaveLength(2);
   });
 
+  it('replaces a half-open socket after the relay announces its update restart', async () => {
+    vi.useFakeTimers();
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.message({
+      type: 'push_config',
+      protocol: 2,
+      release_version: '0.7.0',
+      revision: 'abc123',
+      capabilities: ['self_update'],
+      agent_profiles: [],
+      update: {
+        state: 'installing',
+        available_version: '0.8.0',
+        target_revision: 'f'.repeat(40),
+      },
+    });
+    socket.message({
+      type: 'update_status',
+      update: {
+        state: 'restarting',
+        available_version: '0.8.0',
+        target_revision: 'f'.repeat(40),
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
   it('does not restart a WebSocket handshake that is still connecting', () => {
     relayStore.revalidateConnections(25);
 
