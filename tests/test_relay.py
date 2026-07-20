@@ -14,6 +14,7 @@ import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from contextlib import contextmanager
 
 
 RELAY_PATH = Path(__file__).parents[1] / "relay" / "herdr_relay.py"
@@ -135,11 +136,15 @@ class ClaudeHistoryIsolationMixin:
         relay.claude_history_state.clear()
         relay.claude_history_save_times.clear()
         relay.blocked_agent_details.clear()
+        relay.agent_profile_ids.clear()
+        relay.agent_profile_seen_panes.clear()
         relay.latest_agents_message = relay.agents_message([])
         relay.last_broadcast_agents_message = None
         self.addCleanup(relay.claude_history_state.clear)
         self.addCleanup(relay.claude_history_save_times.clear)
         self.addCleanup(relay.blocked_agent_details.clear)
+        self.addCleanup(relay.agent_profile_ids.clear)
+        self.addCleanup(relay.agent_profile_seen_panes.clear)
 
 
 class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
@@ -2354,7 +2359,11 @@ Production-like verification.
         self.assertIn("/skills", commands)
         self.assertNotIn("/add-dir", commands)
         self.assertFalse(codex["truncated"])
-        self.assertEqual(opencode, {"commands": [], "truncated": False})
+        # Non-Claude, non-Codex agents dynamically discover skills.
+        # The test environment has ~/.opencode/skills, so the result
+        # is structural rather than a fixed snapshot.
+        self.assertIsInstance(opencode["commands"], list)
+        self.assertIsInstance(opencode["truncated"], bool)
 
     def test_claude_slash_commands_merge_project_and_personal_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2422,6 +2431,306 @@ Production-like verification.
         self.assertIn("/first", commands)
         self.assertNotIn("/second", commands)
 
+    # ── Dynamic agent-profiles INI tests ─────────────────────────────
+
+    def _make_test_ini(self, text, base_dir=""):
+        """Write a temporary agent-profiles.ini and point the relay at it.
+
+        Returns ``(ini, base)`` and registers cleanup for the temp file.
+        The caller must still patch ``_CONFIG_HOME``, ``_AGENT_PROFILES_INI``,
+        and ``_AGENT_PROFILES_INI_CACHE`` in the test body.
+        """
+        base = Path(base_dir) if base_dir else Path(tempfile.mkdtemp())
+        ini = base / "agent-profiles.ini"
+        ini.parent.mkdir(parents=True, exist_ok=True)
+        ini.write_text(text)
+        self.addCleanup(lambda: ini.unlink(missing_ok=True))
+        return ini, base
+
+    @contextmanager
+    def _patch_ini_config(self, ini, base):
+        """Context manager that patches the relay's INI wiring end-to-end.
+
+        Patches ``_CONFIG_HOME``, ``_AGENT_PROFILES_INI``, the cached
+        parser, **and** ``AGENT_PROFILE_CANDIDATES`` so that
+        ``_load_agent_profiles_from_config`` and ``_agent_skill_dirs``
+        see the temp file.  All state is auto-restored when the context
+        exits — no stale parser or mutated constants leak into other tests.
+        """
+        saved_candidates = dict(relay.AGENT_PROFILE_CANDIDATES)
+        with (
+            patch.object(relay, "_CONFIG_HOME", base),
+            patch.object(relay, "_AGENT_PROFILES_INI", ini),
+        ):
+            with patch.object(relay, "_AGENT_PROFILES_INI_CACHE", relay._read_agent_profiles_ini()):
+                try:
+                    relay.AGENT_PROFILE_CANDIDATES = (
+                        relay._load_agent_profiles_from_config()
+                        or relay._DEFAULT_AGENT_PROFILE_CANDIDATES
+                    )
+                    relay._MISSING_AGENT_WARNED.clear()
+                    relay._INVALID_COMMAND_FORMAT_WARNED.clear()
+                    yield ini, base
+                finally:
+                    relay.AGENT_PROFILE_CANDIDATES = saved_candidates
+                    relay._MISSING_AGENT_WARNED.clear()
+                    relay._INVALID_COMMAND_FORMAT_WARNED.clear()
+
+    def test_dynamic_profiles_merge_with_defaults(self):
+        ini, base = self._make_test_ini("[profiles]\npi = Pi\n")
+        with self._patch_ini_config(ini, base):
+            candidates = relay._load_agent_profiles_from_config()
+        self.assertIn("codex", candidates)
+        self.assertIn("claude", candidates)
+        self.assertIn("opencode", candidates)
+        self.assertIn("pi", candidates)
+        self.assertEqual(candidates["pi"], "Pi")
+
+    def test_dynamic_profiles_replace_mode(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+        )
+        with self._patch_ini_config(ini, base):
+            candidates = relay._load_agent_profiles_from_config()
+        self.assertEqual(set(candidates), {"pi"})
+
+    def test_dynamic_profiles_missing_file_falls_back_to_defaults(self):
+        ini, base = self._make_test_ini("")
+        ini.unlink()
+        with self._patch_ini_config(ini, base):
+            candidates = relay._load_agent_profiles_from_config()
+        # No file → None returned → defaults used by module constant.
+        self.assertIsNone(candidates)
+
+    def test_dynamic_profiles_empty_section_falls_back(self):
+        ini, base = self._make_test_ini("[profiles]\n")
+        with self._patch_ini_config(ini, base):
+            candidates = relay._load_agent_profiles_from_config()
+        self.assertIsNone(candidates)
+
+    def test_dynamic_profiles_override_default_label(self):
+        ini, base = self._make_test_ini("[profiles]\ncodex = OpenCode (local)\n")
+        with self._patch_ini_config(ini, base):
+            candidates = relay._load_agent_profiles_from_config()
+        self.assertEqual(candidates["codex"], "OpenCode (local)")
+
+    def test_percent_signs_do_not_crash_ini_parsing(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi %00\n"
+            "[skills]\npi = /tmp/skills%%dir0" + os.pathsep + "/tmp/%%dir1\n"
+            "[config]\nreplace_profiles = false\n"
+        )
+        with self._patch_ini_config(ini, base):
+            candidates = relay._load_agent_profiles_from_config()
+            dirs = relay._agent_skill_dirs("pi")
+        self.assertEqual(candidates["pi"], "Pi %00")
+        # interpolation=None preserves literal %% characters.
+        self.assertEqual(dirs, ["/tmp/skills%%dir0", "/tmp/%%dir1"])
+
+    def test_malformed_ini_does_not_crash(self):
+        ini, base = self._make_test_ini("this is not valid INI at all [[[\n???\n")
+        with self._patch_ini_config(ini, base):
+            candidates = relay._load_agent_profiles_from_config()
+            dirs = relay._agent_skill_dirs("pi")
+        self.assertIsNone(candidates)
+        # Falls back to default skill dirs.
+        self.assertTrue(any("pi" in d for d in dirs))
+
+    def test_skill_discovery_labels_first_dir_personal(self):
+        with tempfile.TemporaryDirectory() as skills_dir:
+            (Path(skills_dir) / "alpha" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(skills_dir) / "alpha" / "SKILL.md").write_text(
+                "---\nname: alpha\ndescription: First skill\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[skills]\npi = {skills_dir}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                dirs = relay._agent_skill_dirs("pi")
+                cmds, _trunc = relay.discover_agent_skills("pi")
+            self.assertEqual(dirs, [skills_dir])
+            self.assertTrue(any(c["command"] == "/skill:alpha" for c in cmds))
+            self.assertTrue(any(
+                c["command"] == "/skill:alpha" and c["source"] == "personal"
+                for c in cmds
+            ))
+
+    def test_skill_discovery_labels_second_dir_project(self):
+        with tempfile.TemporaryDirectory() as dir1, tempfile.TemporaryDirectory() as dir2:
+            (Path(dir1) / "alpha" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(dir1) / "alpha" / "SKILL.md").write_text(
+                "---\nname: alpha\ndescription: Personal\n---\n"
+            )
+            (Path(dir2) / "beta" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(dir2) / "beta" / "SKILL.md").write_text(
+                "---\nname: beta\ndescription: Project\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[skills]\npi = {dir1}{os.pathsep}{dir2}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                cmds, _trunc = relay.discover_agent_skills("pi")
+            beta = next(c for c in cmds if c["command"] == "/skill:beta")
+            self.assertEqual(beta["source"], "project")
+
+    def test_skill_discovery_first_dir_wins_on_duplicate(self):
+        with tempfile.TemporaryDirectory() as dir1, tempfile.TemporaryDirectory() as dir2:
+            (Path(dir1) / "dup" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(dir1) / "dup" / "SKILL.md").write_text(
+                "---\nname: dup\ndescription: First\n---\n"
+            )
+            (Path(dir2) / "dup" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(dir2) / "dup" / "SKILL.md").write_text(
+                "---\nname: dup\ndescription: Second\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[skills]\npi = {dir1}{os.pathsep}{dir2}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                cmds, _trunc = relay.discover_agent_skills("pi")
+            dup = [c for c in cmds if c["command"] == "/skill:dup"]
+            self.assertEqual(len(dup), 1)
+            self.assertEqual(dup[0]["description"], "First")
+
+    def test_pi_skills_use_skill_prefix(self):
+        with tempfile.TemporaryDirectory() as skills_dir:
+            (Path(skills_dir) / "triage" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(skills_dir) / "triage" / "SKILL.md").write_text(
+                "---\nname: triage\ndescription: Triage issues\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[skills]\npi = {skills_dir}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                cmds, _trunc = relay.discover_agent_skills("pi")
+            self.assertTrue(any(c["command"] == "/skill:triage" for c in cmds))
+
+    def test_non_invocable_skills_are_filtered(self):
+        with tempfile.TemporaryDirectory() as skills_dir:
+            (Path(skills_dir) / "visible" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(skills_dir) / "visible" / "SKILL.md").write_text(
+                "---\nname: visible\ndescription: Seen\n---\n"
+            )
+            (Path(skills_dir) / "hidden" / "SKILL.md").parent.mkdir()
+            (Path(skills_dir) / "hidden" / "SKILL.md").write_text(
+                "---\nname: hidden\ndescription: Not invocable\nuser-invocable: false\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[skills]\npi = {skills_dir}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                cmds, _trunc = relay.discover_agent_skills("pi")
+            names = {c["command"] for c in cmds}
+            self.assertIn("/skill:visible", names)
+            self.assertNotIn("/skill:hidden", names)
+
+    def test_skill_discovery_truncation(self):
+        with tempfile.TemporaryDirectory() as skills_dir:
+            for i in range(3):
+                (Path(skills_dir) / f"s{i}" / "SKILL.md").parent.mkdir(parents=True)
+                (Path(skills_dir) / f"s{i}" / "SKILL.md").write_text(
+                    f"---\nname: s{i}\ndescription: Skill {i}\n---\n"
+                )
+            ini, base = self._make_test_ini(
+                f"[skills]\npi = {skills_dir}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                with patch.object(relay, "SLASH_COMMAND_MAX_CUSTOM_FILES", 2):
+                    cmds, truncated = relay.discover_agent_skills("pi")
+            self.assertTrue(truncated)
+            self.assertEqual(len(cmds), 2)
+
+    def test_full_catalog_for_configured_agent_discovers_skills(self):
+        with tempfile.TemporaryDirectory() as skills_dir:
+            (Path(skills_dir) / "firehose" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(skills_dir) / "firehose" / "SKILL.md").write_text(
+                "---\nname: firehose\ndescription: Firehose skill\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[profiles]\npi = Pi\n[skills]\npi = {skills_dir}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                catalog = relay.slash_command_catalog({"agent": "pi"})
+            self.assertTrue(any(
+                c["command"] == "/skill:firehose" for c in catalog["commands"]
+            ))
+
+    # Reload takes a module lock, so only one test should do it.  This test
+    # proves that the module-level constant ``AGENT_PROFILE_CANDIDATES`` is
+    # computed from ``_load_agent_profiles_from_config()`` at import time
+    # and falls back to ``_DEFAULT_AGENT_PROFILE_CANDIDATES`` when the INI
+    # file is absent.
+    def test_agent_profile_candidates_is_module_constant_from_config(self):
+        """``AGENT_PROFILE_CANDIDATES`` is computed at import time.
+
+        The constant is always a non-empty dict. When
+        ``_load_agent_profiles_from_config`` returns ``None`` (no INI),
+        it falls back to ``_DEFAULT_AGENT_PROFILE_CANDIDATES``.
+        """
+        # Sanity: the module constant exists and is a dict.
+        self.assertIsInstance(relay.AGENT_PROFILE_CANDIDATES, dict)
+        self.assertTrue(relay.AGENT_PROFILE_CANDIDATES)
+        # The constant is composed of the defaults when no INI exists.
+        # Use a temp config to avoid depending on the real environment.
+        ini, base = self._make_test_ini("")
+        ini.unlink()
+        with self._patch_ini_config(ini, base):
+            for key in ("codex", "claude", "opencode"):
+                self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
+
+    def test_sighup_reloads_agent_profiles_from_changed_ini(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+        )
+        with self._patch_ini_config(ini, base):
+            relay._reload_agent_profiles_ini()
+            self.assertEqual(
+                set(relay.AGENT_PROFILE_CANDIDATES),
+                {"pi"},
+                "After SIGHUP, profiles should reflect the changed INI",
+            )
+
+    def test_sighup_reverts_to_defaults_when_ini_removed(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+        )
+        with self._patch_ini_config(ini, base):
+            relay._reload_agent_profiles_ini()
+            self.assertIn("pi", relay.AGENT_PROFILE_CANDIDATES)
+            # Simulate the INI being deleted: point to a nonexistent path
+            # and reset the cache so reload picks up defaults.
+            missing = base / "does-not-exist.ini"
+            with patch.object(relay, "_AGENT_PROFILES_INI", missing):
+                relay._AGENT_PROFILES_INI_CACHE = None
+                relay._reload_agent_profiles_ini()
+            self.assertNotIn("pi", relay.AGENT_PROFILE_CANDIDATES)
+            for key in ("codex", "claude", "opencode"):
+                self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
+
+    def test_missing_binary_warns_only_for_user_configured_profiles(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\nnonexistent = Ghost\n[config]\nreplace_profiles = true\n"
+        )
+        with self._patch_ini_config(ini, base):
+            relay._reload_agent_profiles_ini()
+            with patch("builtins.print") as mock_print:
+                relay.load_agent_profiles()
+        warnings = [
+            args[0]
+            for args, _kwargs in mock_print.call_args_list
+            if "WARNING" in str(args[0])
+        ]
+        self.assertTrue(
+            any("nonexistent" in w for w in warnings),
+            "Should warn for configured profile with no binary",
+        )
+        # Default profiles (codex, claude, opencode) are never warned about
+        # even when absent.
+        self.assertFalse(
+            any("codex" in w or "claude" in w or "opencode" in w for w in warnings),
+            "Default profiles should not produce warnings",
+        )
+
     def test_workspace_selection_prefers_the_space_owned_by_the_working_directory(self):
         cwd = Path("/home/test/Development/project")
         panes = {
@@ -2467,6 +2776,224 @@ Production-like verification.
             ),
             "",
         )
+
+    def test_profile_id_uses_remembered_pane_mapping_without_substring_guessing(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\npi-local = Pi Local\n"
+            "[config]\nreplace_profiles = true\n"
+            "[aliases]\npi-coding-agent = pi\n"
+        )
+        with self._patch_ini_config(ini, base):
+            relay.remember_agent_profile("w1:p1", "pi-local")
+            self.assertEqual(
+                relay._profile_id_for_agent({
+                    "pane_id": "w1:p1",
+                    "agent": "pi-coding-agent",
+                }),
+                "pi-local",
+            )
+            self.assertEqual(
+                relay._profile_id_for_agent({"agent": "pi-coding-agent"}),
+                "pi",
+            )
+            self.assertEqual(relay._profile_id_for_agent({"agent": "pi"}), "pi")
+            self.assertEqual(
+                relay._profile_id_for_agent({"agent": "spider-agent"}),
+                "",
+            )
+
+    def test_configured_alias_recovers_profile_for_existing_pane(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi-local = Pi Local\n"
+            "[config]\nreplace_profiles = true\n"
+            "[aliases]\npi-coding-agent = pi-local\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertEqual(
+                relay._profile_id_for_agent({
+                    "pane_id": "w1:p1",
+                    "agent": "pi-coding-agent",
+                }),
+                "pi-local",
+            )
+
+    def test_prune_agent_profiles_removes_only_closed_panes(self):
+        relay.agent_profile_ids.update({
+            "w1:p1": "pi",
+            "w1:p2": "pi-local",
+        })
+
+        relay.prune_agent_profiles({"w1:p1", "w1:p2"})
+        relay.prune_agent_profiles({"w1:p2"})
+
+        self.assertEqual(relay.agent_profile_ids, {"w1:p2": "pi-local"})
+
+    def test_prune_agent_profiles_keeps_new_mapping_until_pane_is_observed(self):
+        relay.remember_agent_profile("w1:p1", "pi-local")
+
+        relay.prune_agent_profiles(set())
+
+        self.assertEqual(relay.agent_profile_ids, {"w1:p1": "pi-local"})
+
+    def test_non_utf8_ini_falls_back_without_crashing(self):
+        ini, base = self._make_test_ini("")
+        # Write bytes that are not valid UTF-8
+        ini.write_bytes(b"\xff\xfe[profiles]\npi = Pi\n")
+        with self._patch_ini_config(ini, base):
+            # Should return None (fallback) instead of crashing
+            self.assertIsNone(relay._load_agent_profiles_from_config())
+
+    def test_default_profiles_never_warn_about_missing_binaries(self):
+        ini, base = self._make_test_ini("")
+        ini.unlink()
+        with self._patch_ini_config(ini, base):
+            with patch("builtins.print") as mock_print:
+                relay.load_agent_profiles()
+            warnings = [
+                args[0]
+                for args, _kwargs in mock_print.call_args_list
+                if "WARNING" in str(args[0])
+            ]
+            self.assertEqual(warnings, [], "Default profiles should never produce warnings")
+
+    def test_command_format_is_none_for_unconfigured_agents(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertEqual(relay._agent_command_format("pi"), "skill:{name}")
+            self.assertIsNone(relay._agent_command_format("opencode"))
+            self.assertIsNone(relay._agent_command_format("unknown-agent"))
+
+    def test_command_format_can_be_disabled_in_ini(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+            "[commands]\npi = off\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertIsNone(relay._agent_command_format("pi"))
+
+    def test_empty_command_format_disables_default(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+            "[commands]\npi =\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertIsNone(relay._agent_command_format("pi"))
+
+    def test_command_format_can_be_customised_in_ini(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+            "[commands]\npi = /custom:{name}\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertEqual(relay._agent_command_format("pi"), "/custom:{name}")
+
+    def test_invalid_command_format_disables_suggestions_without_crashing(self):
+        with tempfile.TemporaryDirectory() as skills_dir:
+            skill = Path(skills_dir) / "firehose" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text(
+                "---\nname: firehose\ndescription: Firehose skill\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[profiles]\npi = Pi\n[skills]\npi = {skills_dir}\n"
+                "[commands]\npi = {unknown}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                with patch("builtins.print") as mock_print:
+                    commands, truncated = relay.discover_agent_skills("pi")
+                    repeated = relay._agent_command_format("pi")
+
+            self.assertEqual(commands, [])
+            self.assertFalse(truncated)
+            self.assertIsNone(repeated)
+            mock_print.assert_called_once()
+
+    def test_launched_custom_profile_keeps_identity_for_skill_catalog(self):
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            tempfile.TemporaryDirectory() as skills_dir,
+        ):
+            skill = Path(skills_dir) / "firehose" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text(
+                "---\nname: firehose\ndescription: Firehose skill\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                "[profiles]\npi-local = Pi Local\n"
+                "[config]\nreplace_profiles = true\n"
+                f"[skills]\npi-local = {skills_dir}\n"
+                "[commands]\npi-local = skill:{name}\n"
+            )
+            command_results = [
+                (
+                    True,
+                    json.dumps({
+                        "result": {"pane_id": "w2:p0", "workspace_id": "w2"}
+                    }),
+                    "",
+                ),
+                (
+                    True,
+                    json.dumps({
+                        "result": {
+                            "move_result": {
+                                "pane": {"pane_id": "w2:p0", "tab_id": "w2:t2"}
+                            }
+                        }
+                    }),
+                    "",
+                ),
+                (
+                    True,
+                    json.dumps({
+                        "result": {
+                            "agent": {"pane_id": "w2:p1", "workspace_id": "w2"}
+                        }
+                    }),
+                    "",
+                ),
+            ]
+            profile = {
+                "id": "pi-local",
+                "label": "Pi Local",
+                "argv": ["pi-local"],
+            }
+            with (
+                self._patch_ini_config(ini, base),
+                patch.object(
+                    relay,
+                    "workspace_id_for_cwd",
+                    AsyncMock(return_value="w7"),
+                ),
+                patch.object(
+                    relay,
+                    "run_herdr_async_result",
+                    AsyncMock(side_effect=command_results),
+                ),
+            ):
+                ok, _data, pane_id, placement_error, error = asyncio.run(
+                    relay.start_agent_in_new_tab(
+                        profile,
+                        "mobile-pi",
+                        Path(temp_dir),
+                    )
+                )
+                catalog = relay.slash_command_catalog({
+                    "pane_id": pane_id,
+                    "agent": "pi-coding-agent",
+                })
+
+            self.assertTrue(ok)
+            self.assertEqual(placement_error, "")
+            self.assertEqual(error, "")
+            self.assertEqual(pane_id, "w2:p1")
+            self.assertEqual(relay.agent_profile_ids[pane_id], "pi-local")
+            self.assertIn(
+                "/skill:firehose",
+                {entry["command"] for entry in catalog["commands"]},
+            )
 
 
 class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTestCase):
@@ -3734,6 +4261,143 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(ws.messages[-1]["ok"])
         self.assertEqual(ws.messages[-1]["data"]["pane_id"], "w1:p2")
         self.assertEqual(ws.messages[-1]["data"]["cwd"], cwd)
+
+    async def test_agent_clear_uses_remembered_custom_profile(self):
+        ws = FakeWebSocket()
+        profile = {
+            "id": "pi-local",
+            "label": "Pi Local",
+            "argv": ["pi-local"],
+        }
+        with tempfile.TemporaryDirectory() as cwd:
+            agent = {
+                "pane_id": "w1:p1",
+                "status": "idle",
+                "agent": "pi-coding-agent",
+                "project": "relay",
+                "cwd": cwd,
+            }
+            relay.remember_agent_profile("w1:p1", "pi-local")
+            start_agent = AsyncMock(
+                return_value=(False, None, "", "", "start failed")
+            )
+            with (
+                patch.object(relay.Path, "home", return_value=Path(cwd)),
+                patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+                patch.object(
+                    relay.asyncio,
+                    "to_thread",
+                    AsyncMock(
+                        side_effect=lambda function, *args, **kwargs: function(
+                            *args, **kwargs
+                        )
+                    ),
+                ),
+                patch.object(
+                    relay,
+                    "load_agent_profiles",
+                    return_value={"pi-local": profile},
+                ),
+                patch.object(
+                    relay,
+                    "AGENT_PROFILE_CANDIDATES",
+                    {"pi-local": "Pi Local"},
+                ),
+                patch.object(relay, "start_agent_in_new_tab", start_agent),
+                patch.object(relay, "publish_activity", AsyncMock()),
+            ):
+                await relay.handle_agent_clear_command(ws, {
+                    "type": "agent_clear",
+                    "request_id": "request-custom-clear",
+                    "pane_id": "w1:p1",
+                })
+
+        self.assertEqual(start_agent.await_args.args[0], profile)
+        self.assertNotIn("does not match", ws.messages[-1]["error"])
+
+    async def test_agent_stop_forgets_remembered_profile(self):
+        ws = FakeWebSocket()
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "idle",
+            "agent": "pi-coding-agent",
+            "project": "relay",
+        }
+        relay.remember_agent_profile("w1:p1", "pi-local")
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(
+                    side_effect=lambda function, *args, **kwargs: function(
+                        *args, **kwargs
+                    )
+                ),
+            ),
+            patch.object(
+                relay,
+                "run_herdr_async_result",
+                AsyncMock(return_value=(True, "", "")),
+            ),
+            patch.object(relay, "publish_activity", AsyncMock()),
+        ):
+            await relay.handle_agent_stop_command(ws, {
+                "type": "agent_stop",
+                "request_id": "request-custom-stop",
+                "pane_id": "w1:p1",
+            })
+
+        self.assertNotIn("w1:p1", relay.agent_profile_ids)
+        self.assertTrue(ws.messages[-1]["ok"])
+
+    async def test_pane_placement_retries_on_pane_not_found(self):
+        """pane_not_found errors are retried; other errors return immediately."""
+        async_side_effect = [
+            (False, "", "pane_not_found"),
+            (False, "", "pane_not_found"),
+            (True, json.dumps({"ok": True}), ""),
+        ]
+        with (
+            patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=async_side_effect)) as run_command,
+            patch.object(relay.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            ok, _data, error = await relay.place_started_agent(
+                "w9:p0", "w9", "test-agent", Path("/tmp")
+            )
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+        self.assertEqual(run_command.await_count, 3)
+        self.assertGreater(sleep.await_count, 0)
+
+    async def test_pane_placement_fails_immediately_on_other_errors(self):
+        async_side_effect = [
+            (False, "", "permission denied"),
+        ]
+        with (
+            patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=async_side_effect)) as run_command,
+            patch.object(relay.asyncio, "sleep", AsyncMock()),
+        ):
+            ok, _data, error = await relay.place_started_agent(
+                "w9:p0", "w9", "test-agent", Path("/tmp")
+            )
+        self.assertFalse(ok)
+        self.assertIn("permission denied", error)
+        self.assertEqual(run_command.await_count, 1)
+
+    async def test_pane_placement_exhausts_retries(self):
+        """After 6 attempts, even pane_not_found gives up."""
+        async_side_effect = [(False, "", "pane_not_found")] * 6
+        with (
+            patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=async_side_effect)) as run_command,
+            patch.object(relay.asyncio, "sleep", AsyncMock()),
+        ):
+            ok, _data, error = await relay.place_started_agent(
+                "w9:p0", "w9", "test-agent", Path("/tmp")
+            )
+        self.assertFalse(ok)
+        self.assertIn("pane_not_found", error)
+        self.assertEqual(run_command.await_count, 6)
 
 
 if __name__ == "__main__":

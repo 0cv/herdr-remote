@@ -277,7 +277,7 @@ test('confirms and tracks one relay update through its verified reconnect', asyn
 
   await page.getByRole('button', { name: 'Settings, update available' }).click();
   await expect(page.getByText('Update v0.8.0 available')).toBeVisible();
-  await expect(page.getByText('Phone app version 0.7.0')).toBeVisible();
+  await expect(page.getByText('Phone app version 0.8.0')).toBeVisible();
   await page.getByRole('button', { name: 'Update Fedora to version 0.8.0' }).click();
   const dialog = page.getByRole('dialog', { name: 'Update Relay' });
   await expect(dialog).toContainText('Update Fedora from v0.7.0 to v0.8.0?');

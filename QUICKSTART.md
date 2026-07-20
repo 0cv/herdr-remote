@@ -31,7 +31,7 @@ Keep the Quick Start pane open while testing. Ctrl-C stops the relay and tunnel.
 
 ## 3. Try It
 
-Run an agent in Herdr, or tap **＋** in the phone app to start a detected Codex, Claude Code, or OpenCode agent. You can inspect output, send prompts, answer approvals and structured questions, upload an image, and manage the agent lifecycle.
+Run an agent in Herdr, or tap **＋** in the phone app to start a detected Codex, Claude Code, OpenCode, or any agent you have configured (see [Agent Profiles Configuration](README.md#agent-profiles-configuration)). You can inspect output, send prompts, answer approvals and structured questions, upload an image, and manage the agent lifecycle.
 
 ## Make It Permanent
 
