@@ -15,6 +15,8 @@
   import { claudeMobileTerminalContent, lastCompletedResponse, renderTerminalContent } from '$lib/terminal';
   import type { Agent, SlashCommand, SlashCommandCatalog, TerminalFrame } from '$lib/types';
 
+  const connections = relayStore.connections;
+
   let {
     agent,
     allAgents,
@@ -83,6 +85,11 @@
 
   $effect(() => {
     const paneId = agent.pane_id;
+    const connected = $connections.get(agent.relay_id)?.status === 'connected';
+    if (!connected) {
+      requestedPaneId = '';
+      return;
+    }
     if (paneId === requestedPaneId) return;
     requestedPaneId = paneId;
     relayStore.readPane(agent);

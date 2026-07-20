@@ -9,6 +9,16 @@ fi
 # shellcheck source=common.sh
 . "$SCRIPT_DIR/common.sh"
 
+if [ -z "${HERDR_RELAY_ENV:-}" ]; then
+    SERVICE_ENV="$(installed_service_env_file)"
+    if [ -n "$SERVICE_ENV" ]; then
+        export HERDR_RELAY_ENV="$SERVICE_ENV"
+        echo "Reusing the installed relay configuration:"
+        echo "  $SERVICE_ENV"
+        echo ""
+    fi
+fi
+
 echo "🐑 Herdr Mobile Relay stable tunnel setup"
 echo ""
 echo "This wizard provisions or reuses a named Cloudflare tunnel, installs the"

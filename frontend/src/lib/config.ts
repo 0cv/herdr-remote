@@ -7,6 +7,7 @@ export const THEME_KEY = 'herdr_theme';
 export const INTERFACE_SIZE_KEY = 'herdr_terminal_font_size';
 export const LEGACY_FONT_KEY = 'herdr_home_font_size';
 export const STATUS_LINE_KEY = 'herdr_show_codex_status_line';
+export const TERMINAL_HISTORY_KEY = 'herdr_terminal_history_lines';
 export const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 export const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
 export const PUSH_ENABLED_KEY = 'herdr_push_enabled';
@@ -16,11 +17,15 @@ export const PUSH_VAPID_KEY_PREFIX = 'herdr_push_vapid_key_';
 export const HANDLED_NOTIFICATION_ACTIONS_KEY = 'herdr_handled_notification_actions';
 
 export const APP_PROTOCOL_VERSION = __APP_PROTOCOL_VERSION__;
+export const APP_VERSION = __APP_VERSION__;
+export const APP_ASSET_VERSION = __APP_ASSET_VERSION__;
 export const SERVICE_WORKER_URL = __SERVICE_WORKER_URL__;
 export const THEMES = ['dark', 'light', 'nord', 'solarized', 'rose'] as const;
 export type Theme = (typeof THEMES)[number];
 export const INTERFACE_SIZES = ['compact', 'regular', 'large'] as const;
 export type InterfaceSize = (typeof INTERFACE_SIZES)[number];
+export const TERMINAL_HISTORY_OPTIONS = [100, 1_000, 5_000, 10_000] as const;
+export type TerminalHistoryLines = (typeof TERMINAL_HISTORY_OPTIONS)[number];
 export const THEME_COLORS: Record<Theme, string> = {
   dark: '#0a0a0a',
   light: '#f5f5f5',
@@ -93,9 +98,29 @@ export function quickSetupConfig(locationValue: Pick<Location, 'hash' | 'protoco
   const token = params.get('setup') || '';
   if (token.length < 16 || token.length > 512) return null;
   if (!['http:', 'https:'].includes(locationValue.protocol)) return null;
-  const protocol = locationValue.protocol === 'https:' ? 'wss:' : 'ws:';
+  const configuredRelay = params.get('relay');
+  let url = `${locationValue.protocol === 'https:' ? 'wss:' : 'ws:'}//${locationValue.host}`;
+  if (configuredRelay) {
+    try {
+      const parsed = new URL(configuredRelay);
+      const allowedProtocol = parsed.protocol === 'wss:'
+        || (locationValue.protocol === 'http:' && parsed.protocol === 'ws:');
+      if (
+        !allowedProtocol
+        || parsed.username
+        || parsed.password
+        || !parsed.hostname
+        || !['', '/'].includes(parsed.pathname)
+        || parsed.search
+        || parsed.hash
+      ) return null;
+      url = parsed.origin;
+    } catch {
+      return null;
+    }
+  }
   const label = (params.get('label') || 'This computer').trim().slice(0, 48) || 'This computer';
-  return { label, url: `${protocol}//${locationValue.host}`, token };
+  return { label, url, token };
 }
 
 export function importQuickSetup(
@@ -115,4 +140,6 @@ export function importQuickSetup(
 }
 
 declare const __APP_PROTOCOL_VERSION__: number;
+declare const __APP_VERSION__: string;
+declare const __APP_ASSET_VERSION__: number;
 declare const __SERVICE_WORKER_URL__: string;

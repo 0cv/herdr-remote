@@ -7,15 +7,33 @@ interface RelayFixture {
   token: string;
 }
 
-async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
-  await page.addInitScript(({ savedRelays }) => {
+interface BootOptions {
+  standalone?: boolean;
+}
+
+async function boot(page: Page, relays: RelayFixture[] = [], path = '/', options: BootOptions = {}) {
+  await page.addInitScript(({ savedRelays, standalone }) => {
     if (savedRelays.length) localStorage.setItem('herdr_relays', JSON.stringify(savedRelays));
+    if (standalone) {
+      const nativeMatchMedia = window.matchMedia.bind(window);
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value(query: string) {
+          const result = nativeMatchMedia(query);
+          if (query === '(display-mode: standalone)') {
+            Object.defineProperty(result, 'matches', { configurable: true, value: true });
+          }
+          return result;
+        },
+      });
+    }
     const nativeSetTimeout = window.setTimeout.bind(window);
     window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
       nativeSetTimeout(handler, timeout === 3000 ? 30 : timeout, ...args)) as typeof window.setTimeout;
 
     const sockets: MockSocket[] = [];
     const commands: Record<string, unknown>[] = [];
+    const socketCommands: Record<string, unknown>[][] = [];
     let nextInteraction: Record<string, unknown> | null = null;
     let autoCommands = true;
 
@@ -29,8 +47,11 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
       onmessage: ((event: MessageEvent) => void) | null = null;
+      readonly index: number;
       constructor(readonly url: string) {
+        this.index = sockets.length;
         sockets.push(this);
+        socketCommands.push([]);
         queueMicrotask(() => {
           this.readyState = MockSocket.OPEN;
           this.onopen?.();
@@ -39,6 +60,7 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
       send(serialized: string) {
         const message = JSON.parse(serialized) as Record<string, unknown>;
         commands.push(message);
+        socketCommands[this.index].push(message);
         if (message.type === 'read_pane' || message.type === 'get_activity' || message.type === 'list_directories' || message.type === 'refresh_agents') return;
         if (!autoCommands) return;
         if (message.type === 'upload_image') {
@@ -89,12 +111,13 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
     Object.assign(window, {
       __relayCommands: commands,
       __relaySockets: sockets,
+      __relaySocketCommands(index: number) { return socketCommands[index] || []; },
       __relayServer(index: number, message: unknown) { sockets[index]?.server(message); },
       __relayClose(index: number) { sockets[index]?.serverClose(); },
       __relayNextInteraction(interaction: Record<string, unknown>) { nextInteraction = interaction; },
       __relayAutoCommands(enabled: boolean) { autoCommands = enabled; },
     });
-  }, { savedRelays: relays });
+  }, { savedRelays: relays, standalone: options.standalone ?? false });
   await page.goto(path);
 }
 
@@ -110,6 +133,11 @@ async function commands(page: Page) {
   return page.evaluate(() => (window as any).__relayCommands as Record<string, unknown>[]);
 }
 
+async function commandsForSocket(page: Page, index: number) {
+  return page.evaluate((socketIndex) =>
+    (window as any).__relaySocketCommands(socketIndex) as Record<string, unknown>[], index);
+}
+
 async function handshake(page: Page, index: number, overrides: Record<string, unknown> = {}) {
   await server(page, index, {
     type: 'push_config', protocol: 2, version: 'abc1234', host: index ? 'mac' : 'fedora',
@@ -120,7 +148,6 @@ async function handshake(page: Page, index: number, overrides: Record<string, un
 }
 
 const fedora = { id: 'fedora', label: 'Fedora', url: 'wss://fedora.example', token: 'secret' };
-const mac = { id: 'mac', label: 'Mac', url: 'wss://mac.example', token: 'secret' };
 
 test('keeps device verification modal until native authentication succeeds', async ({ page }) => {
   await page.addInitScript(() => {
@@ -150,20 +177,42 @@ test('keeps device verification modal until native authentication succeeds', asy
 });
 
 test('imports quick setup and merges agents from multiple relays', async ({ page }) => {
-  await boot(page, [], '/#setup=0123456789abcdef0123456789abcdef&label=Fedora%20Workstation');
+  await boot(
+    page,
+    [],
+    '/#setup=0123456789abcdef0123456789abcdef&label=Fedora%20Workstation&relay=wss%3A%2F%2Frelay-fedora.example.com',
+    { standalone: true },
+  );
   await expect(page.getByRole('button', { name: 'Activity history' }).locator('svg')).toBeVisible();
   await expect.poll(() => socketCount(page)).toBe(1);
+  await expect.poll(async () =>
+    (await commandsForSocket(page, 0)).some((command) => command.type === 'register_app_origin')).toBe(true);
+  expect((await commandsForSocket(page, 0)).find((command) => command.type === 'register_app_origin'))
+    .toMatchObject({
+      type: 'register_app_origin',
+      origin: 'http://127.0.0.1:4173',
+      protocol: 2,
+    });
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('herdr_relays') || '[]')[0]))
-    .toMatchObject({ label: 'Fedora Workstation', token: '0123456789abcdef0123456789abcdef' });
+    .toMatchObject({
+      label: 'Fedora Workstation',
+      url: 'wss://relay-fedora.example.com',
+      token: '0123456789abcdef0123456789abcdef',
+    });
   expect(await page.evaluate(() => location.hash)).toBe('');
 
-  await page.evaluate((relay) => {
-    const saved = JSON.parse(localStorage.getItem('herdr_relays') || '[]');
-    localStorage.setItem('herdr_relays', JSON.stringify([...saved, relay]));
-  }, mac);
-  await page.reload();
-  await expect.poll(() => socketCount(page)).toBe(2);
-  const base = 0;
+  await page.evaluate(() => {
+    location.hash = '#setup=abcdef0123456789abcdef0123456789&label=Mac&relay=wss%3A%2F%2Fmac.example';
+  });
+  await expect.poll(() => socketCount(page)).toBe(3);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('herdr_relays') || '[]')[1]))
+    .toMatchObject({
+      label: 'Mac',
+      url: 'wss://mac.example',
+      token: 'abcdef0123456789abcdef0123456789',
+    });
+  expect(await page.evaluate(() => location.hash)).toBe('');
+  const base = 1;
   await handshake(page, base);
   await handshake(page, base + 1);
   await server(page, base, { type: 'agents', agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Fedora app', agent: 'codex' }] });
@@ -188,6 +237,15 @@ test('reconnects and blocks mutations for an incompatible relay protocol', async
   await server(page, 0, { type: 'agents', agents: [{ pane_id: 'w1:p1', status: 'blocked', project: 'Old relay', agent: 'codex', options: ['Approve once', 'Deny'] }] });
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByText(/Relay outdated/)).toBeVisible();
+  await page.getByRole('button', { name: 'How to update Fedora' }).click();
+  const updateHelp = page.getByRole('dialog', { name: 'Update Fedora' });
+  await expect(updateHelp).toContainText('herdr plugin install 0cv/herdr-mobile-relay');
+  await updateHelp.getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('button', { name: 'Remove Fedora' }).click();
+  const removeDialog = page.getByRole('dialog', { name: 'Remove Fedora?' });
+  await expect(removeDialog).toContainText('You will need its setup link or connection details to add it again.');
+  await removeDialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByText('wss://fedora.example')).toBeVisible();
   await page.getByRole('button', { name: 'Back' }).click();
   await page.getByRole('button', { name: 'Approve once' }).click();
   await expect(page.getByRole('status').filter({ hasText: /protocol v1/ })).toBeVisible();
@@ -195,6 +253,93 @@ test('reconnects and blocks mutations for an incompatible relay protocol', async
 
   await page.evaluate(() => (window as any).__relayClose(0));
   await expect.poll(() => socketCount(page)).toBe(2);
+});
+
+test('confirms and tracks one relay update through its verified reconnect', async ({ page }) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0, {
+    release_version: '0.7.0',
+    revision: 'abc1234',
+    capabilities: ['directory_browser', 'self_update'],
+    update: {
+      state: 'available',
+      current_version: '0.7.0',
+      current_revision: 'abc1234',
+      available_version: '0.8.0',
+      available_revision: 'f'.repeat(12),
+      target_revision: 'f'.repeat(40),
+      checked_at: 123,
+      can_install: true,
+      mode: 'local',
+    },
+  });
+
+  await page.getByRole('button', { name: 'Settings, update available' }).click();
+  await expect(page.getByText('Update v0.8.0 available')).toBeVisible();
+  await expect(page.getByText('Phone app version 0.8.0')).toBeVisible();
+  await page.getByRole('button', { name: 'Update Fedora to version 0.8.0' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Update Relay' });
+  await expect(dialog).toContainText('Update Fedora from v0.7.0 to v0.8.0?');
+  await page.evaluate(() => (window as any).__relayAutoCommands(false));
+  await dialog.getByRole('button', { name: 'Update Relay' }).click();
+
+  await expect.poll(async () =>
+    (await commands(page)).filter((command) => command.type === 'install_update').length).toBe(1);
+  const install = (await commands(page)).find((command) => command.type === 'install_update')!;
+  expect(install).toMatchObject({
+    expected_version: '0.8.0',
+    expected_revision: 'f'.repeat(40),
+    protocol: 2,
+  });
+  await server(page, 0, {
+    type: 'update_status',
+    update: {
+      state: 'scheduled',
+      current_version: '0.7.0',
+      current_revision: 'abc1234',
+      available_version: '0.8.0',
+      target_revision: 'f'.repeat(40),
+      mode: 'local',
+    },
+  });
+  await server(page, 0, {
+    type: 'command_result',
+    request_id: install.request_id,
+    ok: true,
+    phase: 'scheduled',
+    data: {
+      update: {
+        state: 'scheduled',
+        current_version: '0.7.0',
+        current_revision: 'abc1234',
+        available_version: '0.8.0',
+        target_revision: 'f'.repeat(40),
+        mode: 'local',
+      },
+    },
+  });
+  await expect(page.getByText('Update scheduled…')).toBeVisible();
+
+  await page.evaluate(() => (window as any).__relayClose(0));
+  await expect.poll(() => socketCount(page)).toBe(2);
+  await handshake(page, 1, {
+    host: 'fedora',
+    release_version: '0.8.0',
+    revision: 'f'.repeat(12),
+    capabilities: ['directory_browser', 'self_update'],
+    update: {
+      state: 'succeeded',
+      current_version: '0.8.0',
+      current_revision: 'f'.repeat(12),
+      checked_at: 124,
+      can_install: false,
+      mode: 'local',
+    },
+  });
+
+  await expect(page.getByRole('status').filter({ hasText: 'Fedora updated to v0.8.0.' })).toBeVisible();
+  await expect(page.getByText('Update installed')).toBeVisible();
 });
 
 test('resets drafts and terminal output when moving to another agent', async ({ page }) => {
@@ -220,7 +365,7 @@ test('resets drafts and terminal output when moving to another agent', async ({ 
   await expect(page.getByRole('log')).not.toContainText('private output from agent A');
 });
 
-test('keeps the active terminal open while a sleeping phone reconnects', async ({ page }) => {
+test('replaces a half-open socket immediately when a sleeping phone resumes', async ({ page }) => {
   await boot(page, [fedora]);
   await expect.poll(() => socketCount(page)).toBe(1);
   await handshake(page, 0);
@@ -235,20 +380,25 @@ test('keeps the active terminal open while a sleeping phone reconnects', async (
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
-    (window as any).__relayClose(0);
   });
-  await expect(page.getByRole('img', { name: 'Relay reconnecting' })).toBeVisible();
   await page.waitForTimeout(5_100);
   await expect(page.getByRole('main', { name: 'Terminal for Resume app' })).toBeVisible();
   await expect(page.getByRole('main', { name: 'Agent unavailable' })).toBeHidden();
   await expect(page.getByRole('log')).toContainText('cached terminal output');
+  await expect(page.getByRole('img', { name: 'Agent working' })).toBeVisible();
 
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await expect.poll(() => socketCount(page)).toBe(2);
+  await expect.poll(async () =>
+    (await commandsForSocket(page, 1)).some((command) => command.type === 'read_pane')).toBe(true);
   await handshake(page, 1);
+  await server(page, 1, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'plain', content: 'fresh output after resume',
+  });
+  await expect(page.getByRole('log')).toContainText('fresh output after resume');
   await server(page, 1, {
     type: 'agents',
     agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Resume app', agent: 'codex' }],
@@ -383,6 +533,7 @@ test('scales the whole interface from accessible settings', async ({ page }) => 
   await boot(page, [fedora]);
   await page.getByRole('button', { name: 'Settings' }).click();
   const sizes = page.getByRole('group', { name: 'Interface Size' });
+  const history = page.getByRole('group', { name: 'Terminal History' });
   const heading = page.getByRole('heading', { name: 'Settings', level: 2 });
 
   await sizes.getByRole('button', { name: 'Compact' }).click();
@@ -397,6 +548,18 @@ test('scales the whole interface from accessible settings', async ({ page }) => 
   expect(largeHeadingSize).toBeGreaterThan(compactHeadingSize);
   expect(await page.evaluate(() => document.documentElement.dataset.interfaceSize)).toBe('large');
   expect(await page.evaluate(() => localStorage.getItem('herdr_terminal_font_size'))).toBe('large');
+
+  await history.getByRole('button', { name: '10000' }).click();
+  expect(await page.evaluate(() => localStorage.getItem('herdr_terminal_history_lines'))).toBe('10000');
+  await handshake(page, 0);
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{ pane_id: 'w1:p1', status: 'idle', project: 'History app', agent: 'codex' }],
+  });
+  await page.getByRole('button', { name: 'Back' }).click();
+  await page.getByRole('button', { name: 'Open History app on Fedora' }).click();
+  await expect.poll(async () => (await commands(page))
+    .some((command) => command.type === 'read_pane' && command.lines === 10000)).toBe(true);
 });
 
 test('handles approvals, chained questions, and notification routing', async ({ page }) => {

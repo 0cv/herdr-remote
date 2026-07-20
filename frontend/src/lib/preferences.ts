@@ -4,10 +4,13 @@ import {
   INTERFACE_SIZE_KEY,
   INTERFACE_SIZES,
   STATUS_LINE_KEY,
+  TERMINAL_HISTORY_KEY,
+  TERMINAL_HISTORY_OPTIONS,
   THEME_COLORS,
   THEME_KEY,
   THEMES,
   type InterfaceSize,
+  type TerminalHistoryLines,
   type Theme,
 } from './config';
 
@@ -27,9 +30,17 @@ function savedStatusLine(): boolean {
   return !window.matchMedia?.('(max-width: 767px)').matches;
 }
 
+function savedTerminalHistoryLines(): TerminalHistoryLines {
+  const value = Number(localStorage.getItem(TERMINAL_HISTORY_KEY));
+  return TERMINAL_HISTORY_OPTIONS.includes(value as TerminalHistoryLines)
+    ? value as TerminalHistoryLines
+    : 1_000;
+}
+
 export const theme = writable<Theme>(savedTheme());
 export const interfaceSize = writable<InterfaceSize>(savedInterfaceSize());
 export const showAgentStatusLine = writable(savedStatusLine());
+export const terminalHistoryLines = writable<TerminalHistoryLines>(savedTerminalHistoryLines());
 
 export function setTheme(value: Theme): void {
   localStorage.setItem(THEME_KEY, value);
@@ -47,6 +58,11 @@ export function setInterfaceSize(value: InterfaceSize): void {
 export function setShowAgentStatusLine(value: boolean): void {
   localStorage.setItem(STATUS_LINE_KEY, value ? 'true' : 'false');
   showAgentStatusLine.set(value);
+}
+
+export function setTerminalHistoryLines(value: TerminalHistoryLines): void {
+  localStorage.setItem(TERMINAL_HISTORY_KEY, String(value));
+  terminalHistoryLines.set(value);
 }
 
 export function initializePreferences(): void {

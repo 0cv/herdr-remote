@@ -20,6 +20,9 @@ export const securityState = writable<SecurityState>({
 
 let unlockInProgress = false;
 let automaticUnlockPending = false;
+const FORCE_RECONNECT_AFTER_BACKGROUND_MS = 3_000;
+const RESUME_RECONNECT_DEDUP_MS = 1_000;
+const RESUME_HEALTH_TIMEOUT_MS = 2_000;
 
 export function deviceVerificationSupported(): boolean {
   return Boolean(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
@@ -38,13 +41,36 @@ export function initializeDeviceSecurity(): () => void {
     void unlockWithDevice('open');
   } else relayStore.connectAll();
 
-  const onVisibility = () => {
-    if (deviceVerificationEnabled()) {
-      if (document.visibilityState === 'hidden') lockForDevice('resume');
-      else unlockAfterResume();
+  let backgroundedAt: number | null = null;
+  let lastForcedReconnectAt: number | null = null;
+  const markBackgrounded = () => {
+    if (backgroundedAt === null) backgroundedAt = Date.now();
+  };
+  const reconnectAfterBackground = (force = false) => {
+    if (document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    const backgroundDuration = backgroundedAt === null ? 0 : Math.max(0, now - backgroundedAt);
+    backgroundedAt = null;
+    if (!force && backgroundDuration < FORCE_RECONNECT_AFTER_BACKGROUND_MS) {
+      relayStore.revalidateConnections(RESUME_HEALTH_TIMEOUT_MS);
       return;
     }
-    if (document.visibilityState === 'visible') relayStore.revalidateConnections();
+    if (lastForcedReconnectAt !== null && now - lastForcedReconnectAt < RESUME_RECONNECT_DEDUP_MS) return;
+    lastForcedReconnectAt = now;
+    relayStore.connectAll(true);
+  };
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') {
+      markBackgrounded();
+      if (deviceVerificationEnabled()) lockForDevice('resume');
+      return;
+    }
+    if (deviceVerificationEnabled()) {
+      backgroundedAt = null;
+      unlockAfterResume();
+      return;
+    }
+    reconnectAfterBackground();
   };
   const onPageShow = (event: PageTransitionEvent) => {
     if (!event.persisted) return;
@@ -53,11 +79,15 @@ export function initializeDeviceSecurity(): () => void {
       setTimeout(unlockAfterResume, 150);
       return;
     }
-    relayStore.revalidateConnections();
+    reconnectAfterBackground(true);
   };
   const onFocus = () => {
-    if (!deviceVerificationEnabled() || document.visibilityState !== 'visible') return;
-    setTimeout(unlockAfterResume, 150);
+    if (document.visibilityState !== 'visible') return;
+    if (deviceVerificationEnabled()) {
+      setTimeout(unlockAfterResume, 150);
+      return;
+    }
+    reconnectAfterBackground();
   };
   const onOnline = () => {
     if (document.visibilityState !== 'visible') return;
@@ -65,14 +95,31 @@ export function initializeDeviceSecurity(): () => void {
       unlockAfterResume();
       return;
     }
-    relayStore.revalidateConnections();
+    reconnectAfterBackground(true);
+  };
+  const onFreeze = () => {
+    markBackgrounded();
+    if (deviceVerificationEnabled()) lockForDevice('resume');
+  };
+  const onResume = () => {
+    if (document.visibilityState !== 'visible') return;
+    if (deviceVerificationEnabled()) {
+      backgroundedAt = null;
+      if (get(securityState).locked) setTimeout(unlockAfterResume, 150);
+      return;
+    }
+    reconnectAfterBackground(true);
   };
   document.addEventListener('visibilitychange', onVisibility);
+  document.addEventListener('freeze', onFreeze);
+  document.addEventListener('resume', onResume);
   window.addEventListener('pageshow', onPageShow);
   window.addEventListener('focus', onFocus);
   window.addEventListener('online', onOnline);
   return () => {
     document.removeEventListener('visibilitychange', onVisibility);
+    document.removeEventListener('freeze', onFreeze);
+    document.removeEventListener('resume', onResume);
     window.removeEventListener('pageshow', onPageShow);
     window.removeEventListener('focus', onFocus);
     window.removeEventListener('online', onOnline);

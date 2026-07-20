@@ -84,7 +84,7 @@ describe('device verification lifecycle', () => {
     expect(relayStore.connectAll).toHaveBeenCalledWith(true);
   });
 
-  it('revalidates relay connections on foreground and online events without device verification', () => {
+  it('probes after a short foreground and reconnects immediately when the network returns', () => {
     localStorage.removeItem(DEVICE_LOCK_KEY);
     localStorage.removeItem(DEVICE_CREDENTIAL_KEY);
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
@@ -96,8 +96,39 @@ describe('device verification lifecycle', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     window.dispatchEvent(new Event('online'));
 
-    expect(relayStore.connectAll).toHaveBeenCalledOnce();
-    expect(relayStore.revalidateConnections).toHaveBeenCalledTimes(2);
+    expect(relayStore.connectAll).toHaveBeenNthCalledWith(1);
+    expect(relayStore.connectAll).toHaveBeenNthCalledWith(2, true);
+    expect(relayStore.revalidateConnections).toHaveBeenCalledOnce();
+    expect(relayStore.revalidateConnections).toHaveBeenCalledWith(2_000);
+    stopSecurity();
+  });
+
+  it('reconnects immediately after a meaningful background interval', async () => {
+    localStorage.removeItem(DEVICE_LOCK_KEY);
+    localStorage.removeItem(DEVICE_CREDENTIAL_KEY);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    const stopSecurity = initializeDeviceSecurity();
+
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(3_000);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(relayStore.connectAll).toHaveBeenNthCalledWith(1);
+    expect(relayStore.connectAll).toHaveBeenNthCalledWith(2, true);
+    expect(relayStore.revalidateConnections).not.toHaveBeenCalled();
+    stopSecurity();
+  });
+
+  it('reconnects immediately when an installed app resumes from a frozen page', () => {
+    localStorage.removeItem(DEVICE_LOCK_KEY);
+    localStorage.removeItem(DEVICE_CREDENTIAL_KEY);
+    const stopSecurity = initializeDeviceSecurity();
+
+    document.dispatchEvent(new Event('resume'));
+
+    expect(relayStore.connectAll).toHaveBeenNthCalledWith(1);
+    expect(relayStore.connectAll).toHaveBeenNthCalledWith(2, true);
     stopSecurity();
   });
 });
