@@ -24,11 +24,12 @@ NPX_BIN="$(command -v npx || true)"
 NODE_BIN="$(command -v node || true)"
 if [ -z "$NPX_BIN" ] || [ -z "$NODE_BIN" ]; then
     echo "✗ Node.js and npx are required only on the relay that deploys the separate app." >&2
-    echo "  Install Node.js 24, then rerun this action." >&2
+    echo "  Install Node.js 24, ensure node and npx are on PATH, then rerun this action." >&2
     exit 1
 fi
 NPX_BIN="$(canonical_file_path "$NPX_BIN")"
 NODE_DIR="$(dirname "$(canonical_file_path "$NODE_BIN")")"
+echo "Using Node.js $("$NODE_BIN" --version) from $NODE_DIR"
 
 RECORDED_ORIGIN="$(dirname "$ENV_FILE")/phone-app-origin"
 DEFAULT_ORIGIN=""

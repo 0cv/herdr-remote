@@ -1343,6 +1343,7 @@ Production-like verification.
             "--plugin", "herdr-mobile-relay.events",
             "--entrypoint", "setup",
             "--placement", "zoomed",
+            "--env", f"PATH={env['PATH']}",
             "--focus",
             "--target-pane", "w1:p1",
         ])
@@ -1393,6 +1394,7 @@ Production-like verification.
             "--plugin", "herdr-mobile-relay.events",
             "--entrypoint", "setup",
             "--placement", "overlay",
+            "--env", f"PATH={env['PATH']}",
             "--focus",
         ])
 
@@ -1814,6 +1816,7 @@ Production-like verification.
                 "--plugin", "herdr-mobile-relay.events",
                 "--entrypoint", "quick-start",
                 "--placement", "zoomed",
+                "--env", f"PATH={env['PATH']}",
                 "--focus",
                 "--target-pane", "w1:p2",
             ])
@@ -1829,6 +1832,7 @@ Production-like verification.
                 "--plugin", "herdr-mobile-relay.events",
                 "--entrypoint", "setup",
                 "--placement", "zoomed",
+                "--env", f"PATH={env['PATH']}",
                 "--focus",
                 "--target-pane", "w1:p2",
             ])
@@ -1844,6 +1848,7 @@ Production-like verification.
                 "--plugin", "herdr-mobile-relay.events",
                 "--entrypoint", "status",
                 "--placement", "overlay",
+                "--env", f"PATH={env['PATH']}",
                 "--focus",
                 "--target-pane", "w1:p2",
             ])

@@ -125,6 +125,7 @@ if [ -S "$SOCKET_PATH" ] && [ -n "$HERDR_COMMAND" ]; then
                 --plugin "$PLUGIN_ID" \
                 --entrypoint setup \
                 --placement zoomed \
+                --env "PATH=$PATH" \
                 --focus \
                 --target-pane "$HERDR_PANE_ID"; then
                 exit 0
@@ -133,6 +134,7 @@ if [ -S "$SOCKET_PATH" ] && [ -n "$HERDR_COMMAND" ]; then
             --plugin "$PLUGIN_ID" \
             --entrypoint setup \
             --placement overlay \
+            --env "PATH=$PATH" \
             --focus; then
             exit 0
         fi

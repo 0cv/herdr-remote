@@ -20,6 +20,7 @@ args=(
     --plugin "$PLUGIN_ID"
     --entrypoint "$ENTRYPOINT"
     --placement "$PLACEMENT"
+    --env "PATH=$PATH"
     --focus
 )
 if [ -n "${HERDR_PANE_ID:-}" ]; then
