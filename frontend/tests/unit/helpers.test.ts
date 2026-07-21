@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activityMatchesSearch } from '$lib/activity';
+import { activityForNotification, activityMatchesSearch } from '$lib/activity';
 import {
   agentStatusTone,
   agentUpdatedAt,
@@ -339,14 +339,30 @@ describe('agent state and sorting', () => {
 });
 
 describe('activity, question drafts, and launch names', () => {
-  it('searches every visible activity field and details', () => {
+  it('searches every stored activity field including the excerpt and details', () => {
     const activity = {
       summary: 'Approval accepted', kind: 'approval', status: 'confirmed', relay_label: 'Fedora',
-      project: 'herdr-mobile-relay', agent: 'Codex', details: { choice: 'Approve once' },
+      project: 'herdr-mobile-relay', session: 'activity-cards', agent: 'Codex', host: 'fedora',
+      pane_id: 'w1:p2', request_id: 'req-9', extract: 'refactor the relay tests',
+      details: { choice: 'Approve once' },
     };
     expect(activityMatchesSearch(activity, 'fedora')).toBe(true);
+    expect(activityMatchesSearch(activity, 'activity-cards')).toBe(true);
     expect(activityMatchesSearch(activity, 'approve once')).toBe(true);
+    expect(activityMatchesSearch(activity, 'refactor the relay')).toBe(true);
+    expect(activityMatchesSearch(activity, 'w1:p2')).toBe(true);
+    expect(activityMatchesSearch(activity, 'req-9')).toBe(true);
     expect(activityMatchesSearch(activity, 'missing')).toBe(false);
+  });
+
+  it('correlates a notification to its stored activity by event id', () => {
+    const activities = [
+      { activity_key: 'a', details: { event_id: 'evt-1' } },
+      { activity_key: 'b', details: { event_id: 'evt-2' } },
+    ];
+    expect(activityForNotification(activities, 'evt-2')?.activity_key).toBe('b');
+    expect(activityForNotification(activities, 'evt-9')).toBeNull();
+    expect(activityForNotification(activities, '')).toBeNull();
   });
 
   it('keeps staged question answers local and validates single choice', () => {

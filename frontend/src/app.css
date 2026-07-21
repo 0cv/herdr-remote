@@ -255,11 +255,27 @@ textarea { min-height: 6.5rem; resize: vertical; }
 
 .activity-search { margin-bottom: .8rem; }
 .activity-list { display: grid; gap: .55rem; }
-.activity-item { background: var(--card); border: 1px solid var(--border); border-radius: .7rem; padding: .75rem; }
+.activity-item { background: var(--card); border: 1px solid var(--border); border-radius: .7rem; color: inherit; cursor: pointer; display: block; font: inherit; padding: .75rem; text-align: left; width: 100%; }
+.activity-item:hover { border-color: var(--muted); }
+.activity-item:active { transform: scale(.995); }
 .activity-title { align-items: center; display: flex; gap: .45rem; }
 .activity-title strong { flex: 1; font-size: .82rem; }
-.activity-title time, .activity-item p { color: var(--muted); font-size: .67rem; }
-.activity-item p { margin: .35rem 0 0 1rem; }
+.activity-title time, .activity-item .activity-meta { color: var(--muted); font-size: .67rem; }
+.activity-chevron { color: var(--muted); font-size: 1.1rem; line-height: 1; }
+.activity-item .activity-meta { display: block; margin: .35rem 0 0 1rem; }
+
+.activity-detail { display: grid; gap: .7rem; }
+.activity-detail-head { align-items: center; display: flex; gap: .5rem; }
+.activity-detail-head h2 { flex: 1; font-size: 1rem; margin: 0; }
+.activity-detail-time { color: var(--muted); font-size: .72rem; }
+.activity-detail-meta { color: var(--muted); font-size: .74rem; margin: 0; }
+.activity-extract { background: var(--terminal); border: 1px solid var(--border); border-radius: .7rem; position: relative; }
+.activity-extract pre { color: var(--terminal-text); font-size: .74rem; line-height: 1.4; margin: 0; max-height: 55dvh; overflow: auto; padding: .8rem; padding-top: 2.4rem; white-space: pre-wrap; word-break: break-word; }
+.activity-extract .empty-state { color: color-mix(in srgb, var(--terminal-text) 60%, transparent); padding: 1rem; }
+.copy-extract { color: var(--terminal-text); height: 2rem; min-height: 2rem; opacity: .65; position: absolute; right: .35rem; top: .35rem; width: 2rem; }
+.copy-extract:hover, .copy-extract:focus-visible { opacity: 1; }
+.activity-detail-actions { display: flex; gap: .6rem; }
+.activity-detail-gone { color: var(--muted); font-size: .78rem; margin: 0; }
 
 .terminal-view { display: flex; flex-direction: column; height: calc(100dvh - 3.5rem - env(safe-area-inset-top)); margin: 0 auto; max-width: 72rem; position: relative; }
 .terminal-view.question-only { overflow: hidden; }

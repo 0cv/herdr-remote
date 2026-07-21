@@ -3,6 +3,7 @@ import { APP_ASSET_VERSION, APP_VERSION, UPSTREAM_APP_VERSION_URL } from './conf
 import type { AppDeploymentStatus, AppUpdateStatus, RelayUpdateStatus } from './types';
 
 const APP_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+const APP_RECHECK_INTERVAL_MS = 60 * 1_000;
 const PENDING_RELAY_UPDATES_KEY = 'herdr_pending_relay_updates';
 const PENDING_APP_DEPLOY_KEY = 'herdr_pending_app_deploy';
 const AUTO_RELOAD_VERSION_KEY = 'herdr_auto_reload_version';
@@ -47,6 +48,11 @@ export function newerVersion(candidate: string, current: string): boolean {
     return next[index] > installed[index];
   }
   return false;
+}
+
+export function appUpdateAvailable(deployed: { version: string; assets: number }): boolean {
+  return newerVersion(deployed.version, APP_VERSION)
+    || (deployed.version === APP_VERSION && deployed.assets > APP_ASSET_VERSION);
 }
 
 export function normalizeRelayUpdate(
@@ -127,7 +133,7 @@ export async function checkAppUpdate(
           ? upstreamResult.reason.message
           : 'Could not check the upstream app version';
         const status: AppUpdateStatus = {
-          state: newerVersion(deployed.version, APP_VERSION) ? 'reload-ready' : 'failed',
+          state: appUpdateAvailable(deployed) ? 'reload-ready' : 'failed',
           currentVersion: APP_VERSION,
           currentAssets: APP_ASSET_VERSION,
           deployedVersion: deployed.version,
@@ -141,7 +147,7 @@ export async function checkAppUpdate(
         return status;
       }
       const upstream = upstreamResult.value;
-      const state = newerVersion(deployed.version, APP_VERSION)
+      const state = appUpdateAvailable(deployed)
         ? 'reload-ready'
         : newerVersion(upstream.version, deployed.version)
           ? 'deployment-required'
@@ -177,19 +183,20 @@ export async function checkAppUpdate(
 
 export function initializeAppUpdates(): () => void {
   void checkAppUpdate();
-  const checkWhenDue = () => {
+  const checkWhenDue = (minElapsed: number) => () => {
     const elapsed = Date.now() - get(appUpdateStatus).checkedAt;
-    if (document.visibilityState === 'visible' && elapsed >= APP_UPDATE_INTERVAL_MS) {
+    if (document.visibilityState === 'visible' && elapsed >= minElapsed) {
       void checkAppUpdate();
     }
   };
-  const timer = window.setInterval(checkWhenDue, APP_UPDATE_INTERVAL_MS);
-  document.addEventListener('visibilitychange', checkWhenDue);
-  window.addEventListener('pageshow', checkWhenDue);
+  const recheckWhenVisible = checkWhenDue(APP_RECHECK_INTERVAL_MS);
+  const timer = window.setInterval(checkWhenDue(APP_UPDATE_INTERVAL_MS), APP_UPDATE_INTERVAL_MS);
+  document.addEventListener('visibilitychange', recheckWhenVisible);
+  window.addEventListener('pageshow', recheckWhenVisible);
   return () => {
     window.clearInterval(timer);
-    document.removeEventListener('visibilitychange', checkWhenDue);
-    window.removeEventListener('pageshow', checkWhenDue);
+    document.removeEventListener('visibilitychange', recheckWhenVisible);
+    window.removeEventListener('pageshow', recheckWhenVisible);
   };
 }
 

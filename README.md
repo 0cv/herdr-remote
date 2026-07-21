@@ -4,7 +4,7 @@
 
 A remote control for [Herdr](https://herdr.dev) agents on Linux and macOS: use your smartphone to monitor status, answer prompts, build plans, and manage their lifecycle.
 
-**Current version:** `0.8.4`
+**Current version:** `0.8.5`
 
 Each computer runs its own local relay. The phone app connects to those relays directly and merges their agents; there is no central broker and the computers do not connect to each other.
 
@@ -164,7 +164,7 @@ The relay never SSHs into another computer. Each relay invokes only fixed local 
 
 ## Agent Profiles Configuration
 
-By default the relay detects Codex, Claude Code, and OpenCode. Additional agents (e.g. Pi) can be added with an INI file at `~/.config/herdr/agent-profiles.ini` (respects `$XDG_CONFIG_HOME`).
+By default the relay detects Codex, Claude Code, and OpenCode. It also automatically advertises any agent installed as a Herdr integration (`herdr integration install qodercli`, for example), so newly integrated agents appear in the phone's Start Agent list without extra configuration. Additional agents (e.g. Pi) can be added with an INI file at `~/.config/herdr/agent-profiles.ini` (respects `$XDG_CONFIG_HOME`).
 
 ```ini
 [profiles]

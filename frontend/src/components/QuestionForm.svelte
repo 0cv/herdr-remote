@@ -208,7 +208,7 @@
       <input
         class="question-other-input"
         value={draft.otherText}
-        maxlength="20000"
+        maxlength="100000"
         aria-label={interaction.other?.placeholder || 'Other answer'}
         placeholder={interaction.other?.placeholder || 'Other answer'}
         onfocus={() => { if (!draft.otherSelected) chooseOther(true); }}

@@ -77,7 +77,7 @@
                 <span class={`status-dot status-${tone}`} class:hollow={group === 'ready'}></span>
                 <span class="agent-copy">
                   <span class="agent-project">{displayName(agent)} <span class="host-badge">@{hostLabel(agent)}</span></span>
-                  <span class="agent-meta">{tab && tab !== displayName(agent) ? `${tab} · ` : ''}{agent.agent || 'agent'} · {agent.status || 'unknown'}</span>
+                  <span class="agent-meta">{tab && tab !== displayName(agent) ? `${tab} · ` : ''}{agent.session ? `${agent.session} · ` : ''}{agent.agent || 'agent'}</span>
                   {#if blocked}
                     <span class="prompt-preview">{interaction?.question || approvalPromptPreview(agent)}</span>
                   {/if}

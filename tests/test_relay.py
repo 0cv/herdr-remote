@@ -2019,6 +2019,126 @@ Production-like verification.
             self.assertEqual([entry["summary"] for entry in entries], ["Second", "Third"])
             self.assertEqual(activity_file.stat().st_mode & 0o777, 0o600)
 
+    def test_record_activity_stores_multiline_extract(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            activity_file = Path(temp_dir) / "activity.jsonl"
+            with patch.object(relay, "ACTIVITY_FILE", activity_file):
+                entry = relay.record_activity(
+                    "blocked",
+                    "attention",
+                    "Run tests?",
+                    extract="line one   \n\n\n\nline two",
+                )
+            self.assertEqual(entry["extract"], "line one\n\nline two")
+
+    def test_record_activity_omits_empty_extract(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            activity_file = Path(temp_dir) / "activity.jsonl"
+            with patch.object(relay, "ACTIVITY_FILE", activity_file):
+                entry = relay.record_activity("agent_status", "working", "Working", extract="   \n  ")
+            self.assertNotIn("extract", entry)
+
+    def test_compact_extract_caps_length(self):
+        capped = relay.compact_extract("x" * (relay.ACTIVITY_EXTRACT_MAX_CHARS + 50))
+        self.assertEqual(len(capped), relay.ACTIVITY_EXTRACT_MAX_CHARS)
+
+    def test_qoder_session_name_prefers_custom_title(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "-home-u-app"
+            project_dir.mkdir()
+            session_file = project_dir / "aaaa.jsonl"
+            session_file.write_text(
+                '{"type":"ai-title","aiTitle":"Auto name","sessionId":"s1"}\n'
+                '{"type":"user","text":"hello"}\n'
+                '{"type":"custom-title","customTitle":"My rename","sessionId":"s1"}\n'
+            )
+            with patch.object(relay, "QODER_PROJECTS_DIR", Path(temp_dir)):
+                self.assertEqual(relay.qoder_session_name("/home/u/app"), "My rename")
+            session_file.write_text('{"type":"ai-title","aiTitle":"Auto name","sessionId":"s1"}\n')
+            with patch.object(relay, "QODER_PROJECTS_DIR", Path(temp_dir)):
+                self.assertEqual(relay.qoder_session_name("/home/u/app"), "Auto name")
+                self.assertEqual(relay.qoder_session_name("/home/u/other"), "")
+
+    def test_claude_session_name_reads_title_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "-home-u-app"
+            project_dir.mkdir()
+            session_file = project_dir / "bbbb.jsonl"
+            session_file.write_text('{"type":"ai-title","aiTitle":"Claude auto","sessionId":"s1"}\n')
+            with patch.object(relay, "CLAUDE_PROJECTS_DIR", Path(temp_dir)):
+                self.assertEqual(relay.claude_session_name("/home/u/app"), "Claude auto")
+                self.assertEqual(relay.claude_session_name("/home/u/other"), "")
+            session_file.write_text('{"type":"summary","summary":"Fix the relay tests","leafUuid":"x"}\n')
+            with patch.object(relay, "CLAUDE_PROJECTS_DIR", Path(temp_dir)):
+                self.assertEqual(relay.claude_session_name("/home/u/app"), "Fix the relay tests")
+
+    def test_project_dir_candidates_handle_dots_and_underscores(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "-home-u-my-app-v2").mkdir()
+            with patch.object(relay, "QODER_PROJECTS_DIR", Path(temp_dir)):
+                self.assertEqual(relay.qoder_session_name("/home/u/my.app_v2"), "")
+            (Path(temp_dir) / "-home-u-my-app-v2" / "cccc.jsonl").write_text(
+                '{"type":"ai-title","aiTitle":"Dotted","sessionId":"s1"}\n'
+            )
+            with patch.object(relay, "QODER_PROJECTS_DIR", Path(temp_dir)):
+                self.assertEqual(relay.qoder_session_name("/home/u/my.app_v2"), "Dotted")
+
+    def test_codex_session_name_matches_by_cwd(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sessions_dir = Path(temp_dir) / "sessions"
+            day_dir = sessions_dir / "2026" / "07" / "21"
+            day_dir.mkdir(parents=True)
+            (day_dir / "rollout-2026-07-21T10-00-00-roll-1.jsonl").write_text(
+                '{"type":"session_meta","payload":{"session_id":"sess-1","id":"roll-1","cwd":"/home/u/app"}}\n'
+            )
+            (day_dir / "rollout-2026-07-21T09-00-00-roll-0.jsonl").write_text(
+                '{"type":"session_meta","payload":{"session_id":"sess-0","id":"roll-0","cwd":"/home/u/other"}}\n'
+            )
+            index_file = Path(temp_dir) / "session_index.jsonl"
+            index_file.write_text(
+                '{"id":"sess-0","thread_name":"other-thread"}\n'
+                '{"id":"sess-1","thread_name":"my-thread"}\n'
+            )
+            with patch.object(relay, "CODEX_SESSIONS_DIR", sessions_dir), \
+                    patch.object(relay, "CODEX_SESSION_INDEX_FILE", index_file):
+                self.assertEqual(relay.codex_session_name("/home/u/app"), "my-thread")
+                self.assertEqual(relay.codex_session_name("/home/u/other"), "other-thread")
+                self.assertEqual(relay.codex_session_name("/home/u/missing"), "")
+
+    def test_record_activity_stores_session_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            activity_file = temp_path / "activity.jsonl"
+            project_dir = temp_path / "qoder" / "-home-u-app"
+            project_dir.mkdir(parents=True)
+            (project_dir / "dddd.jsonl").write_text('{"type":"custom-title","customTitle":"My rename","sessionId":"s1"}\n')
+            snapshot = relay.agents_message([{"pane_id": "p1", "cwd": "/home/u/app"}])
+            with patch.object(relay, "ACTIVITY_FILE", activity_file), \
+                    patch.object(relay, "QODER_PROJECTS_DIR", temp_path / "qoder"), \
+                    patch.object(relay, "latest_agents_message", snapshot):
+                entry = relay.record_activity("blocked", "attention", "Run tests?", pane_id="p1", agent="Qoder")
+                unnamed = relay.record_activity("blocked", "attention", "Run tests?", pane_id="p2", agent="Qoder")
+            self.assertEqual(entry["session"], "My rename")
+            self.assertNotIn("session", unnamed)
+
+    def test_cached_session_name_reuses_recent_resolution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "-home-u-app"
+            project_dir.mkdir()
+            session_file = project_dir / "eeee.jsonl"
+            session_file.write_text('{"type":"custom-title","customTitle":"First","sessionId":"s1"}\n')
+            relay.session_name_cache.clear()
+            try:
+                with patch.object(relay, "QODER_PROJECTS_DIR", Path(temp_dir)):
+                    self.assertEqual(relay.cached_session_name("Qoder", "/home/u/app"), "First")
+                    session_file.write_text('{"type":"custom-title","customTitle":"Second","sessionId":"s1"}\n')
+                    self.assertEqual(relay.cached_session_name("Qoder", "/home/u/app"), "First")
+                relay.session_name_cache[("qoder", "/home/u/app")] = ("First", time.time() - relay.SESSION_NAME_TTL - 1)
+                with patch.object(relay, "QODER_PROJECTS_DIR", Path(temp_dir)):
+                    self.assertEqual(relay.cached_session_name("Qoder", "/home/u/app"), "Second")
+            finally:
+                relay.session_name_cache.clear()
+
     def test_finished_agents_read_done_until_viewed(self):
         pane = "w1:p1"
         relay.unseen_done_panes.clear()
@@ -2103,10 +2223,53 @@ Production-like verification.
         def find_executable(name):
             return f"/usr/bin/{name}" if name in {"codex", "claude"} else None
 
-        with patch.object(relay.shutil, "which", side_effect=find_executable):
+        with patch.object(relay, "cached_herdr_integrations", return_value=set()), \
+                patch.object(relay.shutil, "which", side_effect=find_executable):
             profiles = relay.load_agent_profiles()
         self.assertEqual(set(profiles), {"codex", "claude"})
         self.assertEqual(profiles["claude"]["argv"], ["/usr/bin/claude"])
+
+    def test_herdr_installed_integrations_parses_status(self):
+        status_output = "\n".join([
+            "pi: not installed (/home/me/.pi/agent/extensions/herdr-agent-state.ts)",
+            "codex: current (v6) (/home/me/.codex/herdr-agent-state.sh)",
+            "opencode: outdated (v1) (/home/me/.config/opencode/plugins/herdr-agent-state.js)",
+            "qodercli: current (v2) (/home/me/.qoder/hooks/herdr-agent-state.sh)",
+        ])
+        with patch.object(relay, "run_herdr_result", return_value=(True, status_output, "")):
+            self.assertEqual(
+                relay.herdr_installed_integrations(),
+                {"codex", "opencode", "qodercli"},
+            )
+
+    def test_herdr_installed_integrations_empty_when_herdr_unavailable(self):
+        with patch.object(relay, "run_herdr_result", return_value=(False, "", "herdr missing")):
+            self.assertEqual(relay.herdr_installed_integrations(), set())
+
+    def test_load_agent_profiles_includes_installed_integrations(self):
+        def find_executable(name):
+            return f"/usr/bin/{name}" if name in {"codex", "qodercli"} else None
+
+        with patch.object(relay, "cached_herdr_integrations", return_value={"codex", "qodercli", "pi"}), \
+                patch.object(relay.shutil, "which", side_effect=find_executable):
+            profiles = relay.load_agent_profiles()
+        self.assertIn("qodercli", profiles)
+        self.assertEqual(profiles["qodercli"]["label"], "Qoder")
+        self.assertEqual(profiles["qodercli"]["argv"], ["/usr/bin/qodercli"])
+        # An installed integration whose binary is not on PATH is not advertised.
+        self.assertNotIn("pi", profiles)
+        # A default candidate without a binary is still excluded.
+        self.assertNotIn("claude", profiles)
+
+    def test_load_agent_profiles_configured_label_wins_over_integration(self):
+        def find_executable(name):
+            return f"/usr/bin/{name}" if name == "qodercli" else None
+
+        with patch.object(relay, "cached_herdr_integrations", return_value={"qodercli"}), \
+                patch.object(relay.shutil, "which", side_effect=find_executable), \
+                patch.dict(relay.AGENT_PROFILE_CANDIDATES, {"qodercli": "Qoder CLI"}):
+            profiles = relay.load_agent_profiles()
+        self.assertEqual(profiles["qodercli"]["label"], "Qoder CLI")
 
     def test_agent_listing_captures_lightweight_activity_signals(self):
         pane_result = json.dumps({
@@ -3088,6 +3251,69 @@ Production-like verification.
 
 
 class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_publish_finished_records_excerpt_and_matches_notification(self):
+        captured = {}
+
+        async def fake_publish_activity(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return {"id": "activity-id", "timestamp": 123}
+
+        with (
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(relay, "read_pane", return_value="planned the release\nall tests green"),
+            patch.object(relay, "publish_activity", side_effect=fake_publish_activity),
+            patch.object(relay, "send_finished_webpush_notifications") as send_finished,
+        ):
+            await relay.publish_finished({
+                "pane_id": "w1:p2",
+                "agent": "codex",
+                "project": "relay",
+                "host": "fedora",
+            })
+
+        self.assertEqual(captured["args"][0], "finished")
+        self.assertEqual(captured["kwargs"]["extract"], "planned the release\nall tests green")
+        event_id = captured["kwargs"]["details"]["event_id"]
+        self.assertTrue(event_id)
+        # The finished notification must carry the same id so the app can open
+        # the stored excerpt instead of scanning the live pane.
+        self.assertEqual(send_finished.call_args.args[1], event_id)
+
+    async def test_submit_prompt_records_prompt_text_as_excerpt(self):
+        ws = FakeWebSocket()
+        agent = {"pane_id": "w1:p1", "agent": "codex", "project": "relay"}
+        captured = {}
+
+        async def fake_publish_activity(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return {"id": "activity-id", "timestamp": 123}
+
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(relay, "send_prompt_to_pane", AsyncMock(return_value=(True, ""))),
+            patch.object(relay, "publish_activity", side_effect=fake_publish_activity),
+        ):
+            await relay.handle_submit_prompt_command(ws, {
+                "type": "submit_prompt",
+                "request_id": "request-1",
+                "pane_id": "w1:p1",
+                "text": "refactor the relay tests",
+            })
+
+        self.assertEqual(captured["args"][0], "prompt")
+        self.assertEqual(captured["kwargs"]["extract"], "refactor the relay tests")
+
     async def test_slash_command_request_resolves_agent_from_pane(self):
         ws = FakeWebSocket()
         agent = {"pane_id": "w1:p1", "agent": "claude", "cwd": "/home/test/project"}

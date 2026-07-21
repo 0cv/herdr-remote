@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
+  import ActivityDetail from '$components/ActivityDetail.svelte';
   import ActivityView from '$components/ActivityView.svelte';
   import AgentList from '$components/AgentList.svelte';
   import LaunchView from '$components/LaunchView.svelte';
@@ -9,6 +11,7 @@
   import TerminalView from '$components/TerminalView.svelte';
   import Button from '$components/ui/Button.svelte';
   import Toast from '$components/ui/Toast.svelte';
+  import { activityForNotification } from '$lib/activity';
   import {
     agentContextLabel,
     agentStatusGroup,
@@ -47,6 +50,7 @@
   const relays = relayStore.relayConfigs;
   const connections = relayStore.connections;
   const agents = relayStore.agents;
+  const activities = relayStore.activities;
   const frames = relayStore.terminalFrames;
   const responding = relayStore.responding;
   const appUpdates = appUpdateStatus;
@@ -71,6 +75,7 @@
     if ($currentView.view === 'settings') return 'Settings';
     if ($currentView.view === 'launch') return 'Start Agent';
     if ($currentView.view === 'activity') return 'Activity';
+    if ($currentView.view === 'activity_detail') return 'Activity';
     if (activeAgent) return activeAgent.project || displayName(activeAgent);
     if ($currentView.view === 'terminal') return 'Terminal';
     return '🐑 herdr';
@@ -122,13 +127,49 @@
     lastBlocked = new Set(blocked.map((agent) => agent.pane_id));
   });
 
+  let notificationFallback: ReturnType<typeof setTimeout> | null = null;
+  let notificationFallbackKey = '';
+  function clearNotificationFallback() {
+    if (notificationFallback) clearTimeout(notificationFallback);
+    notificationFallback = null;
+    notificationFallbackKey = '';
+  }
   $effect(() => {
-    if ($currentView.view !== 'notification') return;
+    if ($currentView.view !== 'notification') { clearNotificationFallback(); return; }
     const target = $currentView.target;
     const agent = resolveNotificationTarget(target, $agents);
+    // An action notification (the "Approve once" button) acts immediately and
+    // lands on the live thread — it is not a "review what happened" open.
+    if (target.action) {
+      if (!agent) return;
+      clearNotificationFallback();
+      replaceView({ view: 'terminal', paneId: agent.pane_id });
+      void executeNotificationAction(agent, target);
+      return;
+    }
+    // A plain open shows the stored excerpt card. Activity history streams in on
+    // connect, so re-run reactively until it arrives; if it never does (older
+    // relay with no stored excerpt), fall back to the live thread.
+    const activity = activityForNotification($activities, target.notification_id);
+    if (activity) {
+      clearNotificationFallback();
+      replaceView({ view: 'activity_detail', key: activity.activity_key });
+      return;
+    }
     if (!agent) return;
-    replaceView({ view: 'terminal', paneId: agent.pane_id });
-    if (target.action) void executeNotificationAction(agent, target);
+    // Re-arm when the tapped notification changes so a rapid second tap can't
+    // fall back to the first notification's thread.
+    const key = target.notification_id || `${target.host}:${target.pane_id}`;
+    if (notificationFallback && notificationFallbackKey !== key) clearNotificationFallback();
+    if (!notificationFallback) {
+      notificationFallbackKey = key;
+      const paneId = agent.pane_id;
+      notificationFallback = setTimeout(() => {
+        notificationFallback = null;
+        notificationFallbackKey = '';
+        if (get(currentView).view === 'notification') replaceView({ view: 'terminal', paneId });
+      }, 1500);
+    }
   });
 
   $effect(() => {
@@ -285,6 +326,7 @@
       notification_id: String(agent.event_id || `herdr-${hostLabel(agent)}-${agent.raw_pane_id}`),
     };
     const approve = { ...target, action: 'approve', index: 0, total } as NotificationTarget;
+    const open = { ...target, action: '', index: null, total: null } as NotificationTarget;
     await showPageNotification(`${displayName(agent)} blocked`, {
       body: approvalPromptPreview(agent) || `${agent.agent || 'Agent'} needs approval`,
       tag: `herdr-${target.host}-${target.pane_id}`,
@@ -293,7 +335,7 @@
       badge: typeof HERDR_NOTIFICATION_BADGE === 'string' ? HERDR_NOTIFICATION_BADGE : undefined,
       actions: [{ action: 'approve', title: 'Approve once' }],
       data: {
-        url: viewUrl({ view: 'terminal', paneId: agent.pane_id }),
+        url: viewUrl({ view: 'notification', target: open }),
         action_urls: { approve: viewUrl({ view: 'notification', target: approve }) },
       },
     });
@@ -350,6 +392,8 @@
     <LaunchView />
   {:else if $currentView.view === 'activity'}
     <ActivityView />
+  {:else if $currentView.view === 'activity_detail'}
+    <ActivityDetail key={$currentView.key} />
   {:else if $currentView.view === 'terminal' && activeAgent}
     {#key activeAgent.pane_id}
       <TerminalView agent={activeAgent} allAgents={$agents} frame={$frames.get(activeAgent.pane_id)} responding={$responding} />

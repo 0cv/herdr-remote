@@ -43,10 +43,10 @@ self.addEventListener('notificationclick', event => {
   event.notification.close();
   const data = event.notification.data || {};
   const actionUrls = data.actionUrls || data.action_urls || {};
-  const notificationActions = Array.from(event.notification.actions || []);
-  const action = notificationActions.length === 1 && notificationActions[0].action === 'approve'
-    ? 'approve'
-    : event.action;
+  // Respect the actual click: an action button (e.g. "Approve once") routes to
+  // its action URL, while a plain body click (empty action) falls through to
+  // data.url, which opens the stored-excerpt card.
+  const action = event.action;
   const actionUrl = action && actionUrls[action];
   const url = new URL(actionUrl || data.url || './', self.location.origin + '/').href;
 

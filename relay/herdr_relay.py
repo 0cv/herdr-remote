@@ -115,7 +115,15 @@ VAPID_PUBLIC_KEY = None
 PUSH_LOCK = threading.RLock()
 ACTIVITY_FILE = Path.home() / ".cache" / "herdr-mobile-relay" / "activity.jsonl"
 ACTIVITY_MAX_ITEMS = 500
+ACTIVITY_EXTRACT_MAX_CHARS = 100000
 ACTIVITY_LOCK = threading.RLock()
+PROMPT_MAX_CHARS = 100000
+QODER_PROJECTS_DIR = Path.home() / ".qoder" / "projects"
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+CODEX_SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
+CODEX_ROLLOUT_SCAN_MAX_FILES = 300
+SESSION_TITLE_FIELDS = ("customTitle", "aiTitle", "title", "summary", "text", "name", "value")
 TERMINAL_HISTORY_MAX_LINES = 10000
 CLAUDE_HISTORY_MAX_LINES = TERMINAL_HISTORY_MAX_LINES
 CLAUDE_HISTORY_FOOTER_LINES = 6
@@ -229,6 +237,9 @@ def _reload_agent_profiles_ini():
     # Allow a fresh round of warnings after reload.
     _MISSING_AGENT_WARNED.clear()
     _INVALID_COMMAND_FORMAT_WARNED.clear()
+    # Re-query installed Herdr integrations on the next connection.
+    with ACTIVITY_LOCK:
+        _herdr_integrations_cache["expires"] = 0.0
 
 
 def _load_agent_profiles_from_config():
@@ -629,32 +640,34 @@ def get_agents():
             tab_id = p.get("tab_id", "")
             tab = tabs.get(tab_id, {})
             scroll = p.get("scroll") if isinstance(p.get("scroll"), dict) else {}
-            agents.append(
-                {
-                    "pane_id": raw_pane_id,
-                    "raw_pane_id": raw_pane_id,
-                    "terminal_id": p.get("terminal_id", ""),
-                    "tab_id": tab_id,
-                    "tab_label": tab.get("label", ""),
-                    "tab_number": tab.get("number"),
-                    "workspace_id": p.get("workspace_id", ""),
-                    "agent": p.get("agent", ""),
-                    "name": p.get("name") or p.get("label") or "",
-                    "status": p.get("agent_status", "unknown"),
-                    "_focused": bool(p.get("focused")),
-                    "cwd": p.get("cwd", ""),
-                    "project": os.path.basename(p.get("cwd", "")),
-                    "host": LOCAL_HOST,
-                    "_activity_fingerprint": (
-                        p.get("agent_status", "unknown"),
-                        p.get("revision"),
-                        scroll.get("max_offset_from_bottom"),
-                        p.get("foreground_cwd", ""),
-                        p.get("cwd", ""),
-                        p.get("name") or p.get("label") or "",
-                    ),
-                }
-            )
+            agent = {
+                "pane_id": raw_pane_id,
+                "raw_pane_id": raw_pane_id,
+                "terminal_id": p.get("terminal_id", ""),
+                "tab_id": tab_id,
+                "tab_label": tab.get("label", ""),
+                "tab_number": tab.get("number"),
+                "workspace_id": p.get("workspace_id", ""),
+                "agent": p.get("agent", ""),
+                "name": p.get("name") or p.get("label") or "",
+                "status": p.get("agent_status", "unknown"),
+                "_focused": bool(p.get("focused")),
+                "cwd": p.get("cwd", ""),
+                "project": os.path.basename(p.get("cwd", "")),
+                "host": LOCAL_HOST,
+                "_activity_fingerprint": (
+                    p.get("agent_status", "unknown"),
+                    p.get("revision"),
+                    scroll.get("max_offset_from_bottom"),
+                    p.get("foreground_cwd", ""),
+                    p.get("cwd", ""),
+                    p.get("name") or p.get("label") or "",
+                ),
+            }
+            session = cached_session_name(p.get("agent", ""), p.get("cwd", ""))
+            if session:
+                agent["session"] = session
+            agents.append(agent)
         return agents
     except (json.JSONDecodeError, KeyError):
         return None
@@ -1850,6 +1863,14 @@ def compact_text(value, limit=240):
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
 
 
+def compact_extract(value, limit=ACTIVITY_EXTRACT_MAX_CHARS):
+    """Like compact_text but keeps line breaks so a stored snapshot stays
+    readable as multi-line "what was discussed" instead of a single run-on."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+$", "", line) for line in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()[:limit]
+
+
 def slash_command_entry(name, description, argument_hint="", source="builtin"):
     entry = {
         "command": f"/{name.lstrip('/')}",
@@ -2279,6 +2300,61 @@ def slash_command_catalog(agent):
     return {"commands": values, "truncated": truncated}
 
 
+# Display labels for agents installable via ``herdr integration install <name>``.
+# Used when auto-advertising an installed integration that has no explicit
+# label in agent-profiles.ini. Unknown names fall back to a title-cased id.
+HERDR_INTEGRATION_LABELS = {
+    "pi": "Pi",
+    "omp": "OMP",
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "copilot": "GitHub Copilot",
+    "devin": "Devin",
+    "droid": "Droid",
+    "kimi": "Kimi",
+    "opencode": "OpenCode",
+    "kilo": "Kilo",
+    "hermes": "Hermes",
+    "qodercli": "Qoder",
+    "cursor": "Cursor",
+    "mastracode": "Mastracode",
+}
+_HERDR_INTEGRATION_STATUS_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*):\s*([A-Za-z]+)")
+HERDR_INTEGRATIONS_TTL = 300.0
+_herdr_integrations_cache = {"names": set(), "expires": 0.0}
+
+
+def herdr_installed_integrations():
+    """Return names of agents installed via ``herdr integration install``.
+
+    Parses ``herdr integration status`` lines such as
+    ``codex: current (v6) (...)``. An integration counts as installed when its
+    state is ``current`` or ``outdated``. Returns an empty set when herdr is
+    unavailable, so callers fall back to the configured profiles only.
+    """
+    ok, output, _error = run_herdr_result("integration", "status")
+    if not ok:
+        return set()
+    installed = set()
+    for line in output.splitlines():
+        match = _HERDR_INTEGRATION_STATUS_RE.match(line.strip())
+        if match and match.group(2).lower() in ("current", "outdated"):
+            installed.add(match.group(1))
+    return installed
+
+
+def cached_herdr_integrations():
+    now = time.time()
+    with ACTIVITY_LOCK:
+        if now < _herdr_integrations_cache["expires"]:
+            return set(_herdr_integrations_cache["names"])
+    names = herdr_installed_integrations()
+    with ACTIVITY_LOCK:
+        _herdr_integrations_cache["names"] = names
+        _herdr_integrations_cache["expires"] = time.time() + HERDR_INTEGRATIONS_TTL
+    return set(names)
+
+
 def load_agent_profiles():
     profiles = {}
     parser = _AGENT_PROFILES_INI_CACHE
@@ -2292,7 +2368,16 @@ def load_agent_profiles():
             }
     except configparser.Error:
         pass
-    for profile_id, label in AGENT_PROFILE_CANDIDATES.items():
+    candidates = dict(AGENT_PROFILE_CANDIDATES)
+    # Auto-advertise agents installed via `herdr integration install <name>`
+    # so they appear without a manual agent-profiles.ini entry. Configured and
+    # default candidates keep precedence for labels.
+    for name in cached_herdr_integrations():
+        candidates.setdefault(
+            name,
+            HERDR_INTEGRATION_LABELS.get(name, name.replace("-", " ").title()),
+        )
+    for profile_id, label in candidates.items():
         executable = shutil.which(profile_id)
         if not executable:
             # Only warn for profiles explicitly added by the user
@@ -2425,7 +2510,166 @@ def trim_activity_file():
     tmp.replace(ACTIVITY_FILE)
 
 
-def record_activity(kind, status, summary, pane_id="", agent="", project="", request_id="", details=None):
+def project_dir_candidates(cwd):
+    text = str(cwd or "").rstrip("/")
+    if not text:
+        return []
+    candidates = [text.replace("/", "-")]
+    for pattern in (r"[/.]", r"[/._]"):
+        candidate = re.sub(pattern, "-", text)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def find_project_dir(base_dir, cwd):
+    for candidate in project_dir_candidates(cwd):
+        project_dir = Path(base_dir) / candidate
+        if project_dir.is_dir():
+            return project_dir
+    return None
+
+
+def newest_jsonl(directory):
+    files = [item for item in Path(directory).glob("*.jsonl") if item.is_file()]
+    if not files:
+        return None
+    return max(files, key=lambda item: item.stat().st_mtime)
+
+
+def last_json_titles(path, record_types):
+    """Last title-bearing record of each requested type in a JSONL session file."""
+    found = {}
+    wanted = set(record_types)
+    with Path(path).open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if '"type"' not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            record_type = record.get("type")
+            if record_type not in wanted:
+                continue
+            for key in SESSION_TITLE_FIELDS:
+                value = record.get(key)
+                if isinstance(value, str) and value.strip():
+                    found[record_type] = value.strip()
+                    break
+    return found
+
+
+def project_session_title(base_dir, cwd):
+    project_dir = find_project_dir(base_dir, cwd)
+    session_file = newest_jsonl(project_dir) if project_dir else None
+    if not session_file:
+        return ""
+    titles = last_json_titles(session_file, ("custom-title", "ai-title", "summary"))
+    return titles.get("custom-title") or titles.get("ai-title") or titles.get("summary") or ""
+
+
+def qoder_session_name(cwd):
+    return project_session_title(QODER_PROJECTS_DIR, cwd)
+
+
+def claude_session_name(cwd):
+    return project_session_title(CLAUDE_PROJECTS_DIR, cwd)
+
+
+def codex_thread_names():
+    names = {}
+    if not CODEX_SESSION_INDEX_FILE.is_file():
+        return names
+    with CODEX_SESSION_INDEX_FILE.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            session_id = record.get("id")
+            thread_name = record.get("thread_name")
+            if isinstance(session_id, str) and isinstance(thread_name, str) and thread_name.strip():
+                names[session_id] = thread_name.strip()
+    return names
+
+
+def codex_session_name(cwd):
+    if not str(cwd):
+        return ""
+    names = codex_thread_names()
+    if not names:
+        return ""
+    day_dirs = sorted((item for item in CODEX_SESSIONS_DIR.glob("*/*/*") if item.is_dir()), reverse=True)
+    scanned = 0
+    for day_dir in day_dirs:
+        for rollout in sorted(day_dir.glob("rollout-*.jsonl"), reverse=True):
+            scanned += 1
+            if scanned > CODEX_ROLLOUT_SCAN_MAX_FILES:
+                return ""
+            try:
+                with rollout.open("r", encoding="utf-8", errors="replace") as handle:
+                    first_line = handle.readline()
+            except OSError:
+                continue
+            try:
+                payload = (json.loads(first_line) or {}).get("payload") or {}
+            except ValueError:
+                continue
+            if payload.get("cwd") != str(cwd):
+                continue
+            for key in ("session_id", "id"):
+                thread_name = names.get(payload.get(key))
+                if thread_name:
+                    return thread_name
+    return ""
+
+
+def agent_cwd_for_pane(pane_id):
+    if not pane_id:
+        return ""
+    try:
+        agents = json.loads(latest_agents_message).get("agents", [])
+    except (TypeError, ValueError):
+        return ""
+    for agent in agents:
+        if agent.get("pane_id") == pane_id:
+            return str(agent.get("cwd") or "")
+    return ""
+
+
+def session_name_for_activity(agent, cwd):
+    key = str(agent or "").lower()
+    try:
+        if "qoder" in key:
+            return qoder_session_name(cwd)
+        if "claude" in key:
+            return claude_session_name(cwd)
+        if "codex" in key:
+            return codex_session_name(cwd)
+    except OSError:
+        return ""
+    return ""
+
+
+SESSION_NAME_TTL = 60.0
+session_name_cache = {}
+
+
+def cached_session_name(agent, cwd):
+    key = (str(agent or "").lower(), str(cwd or ""))
+    now = time.time()
+    with ACTIVITY_LOCK:
+        hit = session_name_cache.get(key)
+        if hit and now - hit[1] < SESSION_NAME_TTL:
+            return hit[0]
+    name = session_name_for_activity(agent, cwd)
+    with ACTIVITY_LOCK:
+        session_name_cache[key] = (name, now)
+    return name
+
+
+def record_activity(kind, status, summary, pane_id="", agent="", project="", request_id="", details=None, extract=""):
     entry = {
         "id": secrets.token_urlsafe(12),
         "timestamp": now_millis(),
@@ -2438,6 +2682,13 @@ def record_activity(kind, status, summary, pane_id="", agent="", project="", req
         "project": compact_text(project, 120),
         "request_id": compact_text(request_id, 120),
     }
+    extract_text = compact_extract(extract)
+    if extract_text:
+        entry["extract"] = extract_text
+    if pane_id:
+        session = session_name_for_activity(agent, agent_cwd_for_pane(pane_id))
+        if session:
+            entry["session"] = compact_text(session, 120)
     if isinstance(details, dict):
         entry["details"] = {
             compact_text(key, 40): compact_text(value, 240)
@@ -2643,12 +2894,12 @@ def push_payload(blocked_msg):
     }
 
 
-def finished_push_payload(agent):
+def finished_push_payload(agent, event_id=""):
     project = agent.get("project") or agent.get("agent") or "Agent"
     agent_name = agent.get("agent") or "Agent"
     host = agent.get("host") or LOCAL_HOST
     pane_id = agent.get("pane_id", "")
-    event_id = f"finished-{secrets.token_urlsafe(8)}"
+    event_id = event_id or f"finished-{secrets.token_urlsafe(8)}"
     return {
         "title": f"{project} finished",
         "body": f"{agent_name} completed · {host}",
@@ -2696,9 +2947,9 @@ def send_webpush_notifications(blocked_msg):
     send_webpush_payload(push_payload(blocked_msg))
 
 
-def send_finished_webpush_notifications(agent):
+def send_finished_webpush_notifications(agent, event_id=""):
     send_webpush_payload(
-        finished_push_payload(agent),
+        finished_push_payload(agent, event_id),
         lambda item: item.get("notify_finished") is True,
     )
 
@@ -2707,8 +2958,22 @@ async def push_blocked(blocked_msg):
     await asyncio.to_thread(send_webpush_notifications, blocked_msg)
 
 
-async def push_finished(agent):
-    await asyncio.to_thread(send_finished_webpush_notifications, agent)
+async def publish_finished(event):
+    pane_id = event.get("pane_id", "")
+    event_id = f"finished-{secrets.token_urlsafe(8)}"
+    extract = await asyncio.to_thread(read_pane, pane_id) if pane_id else ""
+    agent_name = event.get("agent") or "Agent"
+    await publish_activity(
+        "finished",
+        "completed",
+        f"{agent_name} completed",
+        pane_id=pane_id,
+        agent=event.get("agent", ""),
+        project=event.get("project", ""),
+        details={"event_id": event_id},
+        extract=extract,
+    )
+    await asyncio.to_thread(send_finished_webpush_notifications, event, event_id)
 
 
 async def publish_blocked(blocked_msg):
@@ -2723,6 +2988,7 @@ async def publish_blocked(blocked_msg):
         agent=blocked_msg.get("agent", ""),
         project=blocked_msg.get("project", ""),
         details={"event_id": blocked_msg["event_id"]},
+        extract=blocked_msg.get("prompt", ""),
     )
     blocked_msg["updated_at"] = activity["timestamp"]
     await broadcast(blocked_msg)
@@ -3263,7 +3529,7 @@ async def poll_loop():
         await broadcast_agents_if_changed(agents)
         await send_requested_agent_refreshes()
         for agent in finished_agents:
-            asyncio.create_task(push_finished(agent))
+            asyncio.create_task(publish_finished(agent))
         for pane_id in set(last_statuses) - live_pane_ids:
             del last_statuses[pane_id]
         if agents:
@@ -3330,7 +3596,7 @@ async def event_push():
                 "updated_at": updated_at,
             })
         if notify_finished:
-            asyncio.create_task(push_finished({**event, "pane_id": raw_pane_id, "host": host}))
+            asyncio.create_task(publish_finished({**event, "pane_id": raw_pane_id, "host": host}))
 
 
 def header_value(request, name):
@@ -3777,6 +4043,7 @@ async def complete_command(
     phase="completed",
     data=None,
     details=None,
+    extract="",
 ):
     await send_command_result(
         ws,
@@ -3797,6 +4064,7 @@ async def complete_command(
         project=project,
         request_id=request_id,
         details=details,
+        extract=extract,
     )
 
 
@@ -4437,8 +4705,8 @@ async def handle_submit_prompt_command(ws, msg):
     if not pane_id or not isinstance(prompt, str) or not prompt.strip():
         await complete_command(ws, request_id, "prompt", False, "Prompt failed", error="Prompt text is required", pane_id=pane_id)
         return
-    if len(prompt) > 20000:
-        await complete_command(ws, request_id, "prompt", False, "Prompt failed", error="Prompt is longer than 20,000 characters", pane_id=pane_id)
+    if len(prompt) > PROMPT_MAX_CHARS:
+        await complete_command(ws, request_id, "prompt", False, "Prompt failed", error="Prompt is longer than 100,000 characters", pane_id=pane_id)
         return
     agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
     if error:
@@ -4457,6 +4725,7 @@ async def handle_submit_prompt_command(ws, msg):
         agent=agent.get("agent", ""),
         project=agent.get("project", ""),
         details=command_details(msg, {"preview": compact_text(prompt, 120)}),
+        extract=prompt,
     )
 
 
@@ -4542,8 +4811,8 @@ async def handle_agent_start_command(ws, msg):
     if cwd_error:
         await complete_command(ws, request_id, "agent_start", False, "Agent start failed", error=cwd_error)
         return
-    if not isinstance(prompt, str) or len(prompt) > 20000:
-        await complete_command(ws, request_id, "agent_start", False, "Agent start failed", error="Initial task is longer than 20,000 characters")
+    if not isinstance(prompt, str) or len(prompt) > PROMPT_MAX_CHARS:
+        await complete_command(ws, request_id, "agent_start", False, "Agent start failed", error="Initial task is longer than 100,000 characters")
         return
 
     ok, data, pane_id, placement_error, error = await start_agent_in_new_tab(profile, name, cwd)

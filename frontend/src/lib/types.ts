@@ -71,6 +71,7 @@ export interface Agent {
   agent?: string;
   name?: string;
   status?: string;
+  session?: string;
   project?: string;
   cwd?: string;
   host?: string;
@@ -95,9 +96,12 @@ export interface Activity {
   kind?: string;
   status?: string;
   host?: string;
+  pane_id?: string;
   project?: string;
+  session?: string;
   agent?: string;
   request_id?: string;
+  extract?: string;
   details?: Record<string, unknown>;
   relay_id: string;
   relay_label: string;

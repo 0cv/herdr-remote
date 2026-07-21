@@ -1,7 +1,8 @@
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { APP_VERSION } from '$lib/config';
+import { APP_ASSET_VERSION, APP_VERSION } from '$lib/config';
 import {
+  appUpdateAvailable,
   appUpdateStatus,
   checkAppUpdate,
   clearPendingAppDeploy,
@@ -29,6 +30,13 @@ describe('release updates', () => {
     expect(newerVersion('0.8.0', '0.7.9')).toBe(true);
     expect(newerVersion('0.7.10', '0.8.0')).toBe(false);
     expect(newerVersion('0.7.0', '0.7.0')).toBe(false);
+  });
+
+  it('treats a same-version asset bump as an available update', () => {
+    expect(appUpdateAvailable({ version: APP_VERSION, assets: APP_ASSET_VERSION + 1 })).toBe(true);
+    expect(appUpdateAvailable({ version: APP_VERSION, assets: APP_ASSET_VERSION })).toBe(false);
+    const [major, minor, patch] = semverTuple(APP_VERSION)!;
+    expect(appUpdateAvailable({ version: `${major}.${minor + 1}.${patch}`, assets: 0 })).toBe(true);
   });
 
   it('normalizes relay update data without trusting arbitrary states', () => {
@@ -72,6 +80,19 @@ describe('release updates', () => {
       checkedAt: 123,
     });
     expect(get(appUpdateStatus).state).toBe('deployment-required');
+  });
+
+  it('offers reload for an assets-only deploy at the same version', async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: APP_VERSION, assets: APP_ASSET_VERSION + 1 }),
+    });
+
+    expect(await checkAppUpdate(fetcher, 126)).toMatchObject({
+      state: 'reload-ready',
+      deployedVersion: APP_VERSION,
+      deployedAssets: APP_ASSET_VERSION + 1,
+    });
   });
 
   it('only offers reload after the app origin has published the upstream bundle', async () => {

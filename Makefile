@@ -133,7 +133,9 @@ web-bundle-check:
 	node --check web/sw.js
 	node --check web/notification-icons.js
 
-web-release: frontend-check
+web-release:
+	node frontend/scripts/bump-assets.mjs
+	$(MAKE) frontend-check
 	node frontend/scripts/release.mjs
 	$(MAKE) web-bundle-check
 

@@ -68,13 +68,13 @@ describe('accessible Svelte interactions', () => {
     respond.mockRestore();
   });
 
-  it('shows the Herdr tab name in the card meta line', () => {
+  it('shows the Herdr tab name and session in the card meta line', () => {
     const named: Agent = {
       relay_id: 'fedora', relay_label: 'Fedora', raw_pane_id: 'w2:p1', pane_id: 'fedora::w2:p1',
-      project: 'relay', agent: 'codex', status: 'working', tab_label: 'my-tab',
+      project: 'relay', agent: 'codex', status: 'working', tab_label: 'my-tab', session: 'my-session',
     };
     const { container } = render(AgentList, { agents: [named], relays: [], responding: new Set<string>(), onopen: vi.fn() });
-    expect(container.querySelector('.agent-meta')?.textContent).toBe('my-tab · codex · working');
+    expect(container.querySelector('.agent-meta')?.textContent).toBe('my-tab · my-session · codex');
     expect(container.querySelector('.agent-project')?.textContent).toContain('relay');
   });
 
@@ -84,7 +84,7 @@ describe('accessible Svelte interactions', () => {
       project: 'relay', agent: 'codex', status: 'working',
     };
     const { container } = render(AgentList, { agents: [plain], relays: [], responding: new Set<string>(), onopen: vi.fn() });
-    expect(container.querySelector('.agent-meta')?.textContent).toBe('codex · working');
+    expect(container.querySelector('.agent-meta')?.textContent).toBe('codex');
   });
 
   it('keeps a structured answer local until Submit', async () => {

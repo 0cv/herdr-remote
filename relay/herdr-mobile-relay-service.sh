@@ -15,7 +15,14 @@ if [ -f "$ENV_FILE" ]; then
     set +a
 fi
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Agents often install their CLI into a per-tool bin directory that the service
+# PATH does not include (e.g. ~/.opencode/bin). Append any that exist so the
+# relay can detect them; base entries keep precedence.
+for agent_bin in "$HOME"/.[!.]*/bin; do
+    [ -d "$agent_bin" ] && PATH="$PATH:$agent_bin"
+done
+export PATH
 export HERDR_RELAY_HOST="${HERDR_RELAY_HOST:-127.0.0.1}"
 export HERDR_RELAY_PORT="${HERDR_RELAY_PORT:-8375}"
 

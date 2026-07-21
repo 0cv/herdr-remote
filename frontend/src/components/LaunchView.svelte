@@ -157,7 +157,7 @@
       <input id="launch-name" bind:value={name} required maxlength="48" pattern={'[A-Za-z0-9][A-Za-z0-9._-]{0,47}'} placeholder="project-codex" autocomplete="off" />
 
       <label for="launch-prompt">Initial task <span class="optional">(optional)</span></label>
-      <textarea id="launch-prompt" bind:value={prompt} maxlength="20000" placeholder="Describe the task to start…"></textarea>
+      <textarea id="launch-prompt" bind:value={prompt} maxlength="100000" placeholder="Describe the task to start…"></textarea>
       <p class="hint">Sent to the agent as its first prompt after it starts.</p>
       <Button type="submit" disabled={submitting || !relayId || !profileId || !cwd || !name}>Start Agent</Button>
       {#if status}<p class:error class="form-status" role="status">{status}</p>{/if}
