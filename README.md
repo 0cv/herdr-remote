@@ -175,7 +175,7 @@ pi = Pi
 ```
 
 - Keys in `[profiles]` are **merged** with the built-in defaults. You only need to add new agents or override existing labels.
-- Set `[config] replace_profiles = true` to replace instead of merge.
+- Set `[config] replace_profiles = true` to replace instead of merge. This also suppresses Herdr integration auto-detection, so only the explicitly configured profiles are advertised.
 - Each profile id is also its executable name. Its binary must be on `PATH` for the relay to advertise it. A missing user-added binary prints one warning per relay run.
 
 ### Custom Slash-Command Suggestions

@@ -1,4 +1,5 @@
 import asyncio
+import configparser
 import copy
 import importlib.util
 import json
@@ -2133,7 +2134,7 @@ Production-like verification.
                     self.assertEqual(relay.cached_session_name("Qoder", "/home/u/app"), "First")
                     session_file.write_text('{"type":"custom-title","customTitle":"Second","sessionId":"s1"}\n')
                     self.assertEqual(relay.cached_session_name("Qoder", "/home/u/app"), "First")
-                relay.session_name_cache[("qoder", "/home/u/app")] = ("First", time.time() - relay.SESSION_NAME_TTL - 1)
+                relay.session_name_cache[("qoder", "/home/u/app", "")] = ("First", time.time() - relay.SESSION_NAME_TTL - 1)
                 with patch.object(relay, "QODER_PROJECTS_DIR", Path(temp_dir)):
                     self.assertEqual(relay.cached_session_name("Qoder", "/home/u/app"), "Second")
             finally:
@@ -2270,6 +2271,59 @@ Production-like verification.
                 patch.dict(relay.AGENT_PROFILE_CANDIDATES, {"qodercli": "Qoder CLI"}):
             profiles = relay.load_agent_profiles()
         self.assertEqual(profiles["qodercli"]["label"], "Qoder CLI")
+
+    def test_replace_profiles_mode_suppresses_integration_auto_detection(self):
+        ini_content = "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(ini_content)
+        with patch.object(relay, "_AGENT_PROFILES_INI_CACHE", parser), \
+                patch.dict(relay.AGENT_PROFILE_CANDIDATES, {"pi": "Pi"}, clear=True), \
+                patch.object(relay, "cached_herdr_integrations", return_value={"codex", "qodercli"}) as mock_integrations, \
+                patch.object(relay.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}" if name == "pi" else None):
+            profiles = relay.load_agent_profiles()
+        self.assertEqual(set(profiles), {"pi"})
+        mock_integrations.assert_not_called()
+
+    def test_cached_herdr_integrations_returns_stale_and_refreshes_in_background(self):
+        cache = {"names": {"codex"}, "expires": 0.0, "refreshing": False}
+        with patch.object(relay, "_herdr_integrations_cache", cache), \
+                patch.object(relay, "herdr_installed_integrations", return_value={"codex", "qodercli"}), \
+                patch.object(relay.threading, "Thread") as mock_thread:
+            result = relay.cached_herdr_integrations()
+        self.assertEqual(result, {"codex"})
+        mock_thread.assert_called_once()
+        self.assertTrue(cache["refreshing"])
+
+    def test_prewarm_populates_cache_before_first_client(self):
+        cache = {"names": set(), "expires": 0.0, "refreshing": False}
+        with patch.object(relay, "_herdr_integrations_cache", cache), \
+                patch.object(relay, "herdr_installed_integrations", return_value={"qodercli", "codex"}):
+            relay.prewarm_herdr_integrations()
+        with patch.object(relay, "_herdr_integrations_cache", cache), \
+                patch.object(relay.threading, "Thread") as mock_thread:
+            self.assertEqual(relay.cached_herdr_integrations(), {"qodercli", "codex"})
+        mock_thread.assert_not_called()
+
+    def test_load_activity_respects_byte_budget(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            activity_file = Path(temp_dir) / "activity.jsonl"
+            entry = {"id": "x", "summary": "y" * 500}
+            line = json.dumps(entry, separators=(",", ":")) + "\n"
+            activity_file.write_text(line * 20)
+            budget = len(line) * 5
+            with patch.object(relay, "ACTIVITY_FILE", activity_file), \
+                    patch.object(relay, "ACTIVITY_MAX_ITEMS", 500), \
+                    patch.object(relay, "ACTIVITY_MAX_BYTES", budget):
+                entries = relay.load_activity(500)
+            self.assertEqual(len(entries), 5)
+
+    def test_blocked_event_id_is_pre_generated_in_agents_snapshot(self):
+        blocked = {"pane_id": "w1:p1", "status": "blocked", "agent": "codex"}
+        details = {}
+        with patch.object(relay, "blocked_agent_details", details):
+            details["w1:p1"] = {"event_id": "pre-generated-id"}
+            msg = json.loads(relay.agents_message([blocked]))
+        self.assertEqual(msg["agents"][0]["event_id"], "pre-generated-id")
 
     def test_agent_listing_captures_lightweight_activity_signals(self):
         pane_result = json.dumps({

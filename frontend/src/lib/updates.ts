@@ -50,9 +50,16 @@ export function newerVersion(candidate: string, current: string): boolean {
   return false;
 }
 
+export function newerBundle(
+  candidate: { version: string; assets: number },
+  current: { version: string; assets: number },
+): boolean {
+  return newerVersion(candidate.version, current.version)
+    || (candidate.version === current.version && candidate.assets > current.assets);
+}
+
 export function appUpdateAvailable(deployed: { version: string; assets: number }): boolean {
-  return newerVersion(deployed.version, APP_VERSION)
-    || (deployed.version === APP_VERSION && deployed.assets > APP_ASSET_VERSION);
+  return newerBundle(deployed, { version: APP_VERSION, assets: APP_ASSET_VERSION });
 }
 
 export function normalizeRelayUpdate(
@@ -149,7 +156,7 @@ export async function checkAppUpdate(
       const upstream = upstreamResult.value;
       const state = appUpdateAvailable(deployed)
         ? 'reload-ready'
-        : newerVersion(upstream.version, deployed.version)
+        : newerBundle(upstream, deployed)
           ? 'deployment-required'
           : 'current';
       const status: AppUpdateStatus = {

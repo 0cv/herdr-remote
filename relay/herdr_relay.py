@@ -115,9 +115,11 @@ VAPID_PUBLIC_KEY = None
 PUSH_LOCK = threading.RLock()
 ACTIVITY_FILE = Path.home() / ".cache" / "herdr-mobile-relay" / "activity.jsonl"
 ACTIVITY_MAX_ITEMS = 500
-ACTIVITY_EXTRACT_MAX_CHARS = 100000
+ACTIVITY_MAX_BYTES = 2 * 1024 * 1024
+ACTIVITY_EXTRACT_MAX_CHARS = 10000
 ACTIVITY_LOCK = threading.RLock()
 PROMPT_MAX_CHARS = 100000
+ANSWER_MAX_CHARS = 100000
 QODER_PROJECTS_DIR = Path.home() / ".qoder" / "projects"
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
@@ -287,6 +289,22 @@ def _load_agent_profiles_from_config():
     merged = dict(_DEFAULT_AGENT_PROFILE_CANDIDATES)
     merged.update(configured)
     return merged
+
+
+def _profiles_replace_mode():
+    """True when agent-profiles.ini sets ``[config] replace_profiles``.
+
+    Replacement mode means "advertise exactly the profiles I configured", so
+    Herdr-integration auto-detection must not add extra agents back in.
+    """
+    parser = _AGENT_PROFILES_INI_CACHE
+    try:
+        if parser is None or not parser.has_section("config"):
+            return False
+        value = parser.get("config", "replace_profiles", fallback="false").strip().lower()
+        return value in ("true", "yes", "1", "on")
+    except configparser.Error:
+        return False
 
 
 AGENT_PROFILE_CANDIDATES = (
@@ -633,6 +651,7 @@ def get_agents():
         panes = data.get("result", {}).get("panes", [])
         tabs = get_tabs()
         agents = []
+        session_ids = {}
         for p in panes:
             if not p.get("agent"):
                 continue
@@ -640,6 +659,8 @@ def get_agents():
             tab_id = p.get("tab_id", "")
             tab = tabs.get(tab_id, {})
             scroll = p.get("scroll") if isinstance(p.get("scroll"), dict) else {}
+            agent_session = p.get("agent_session")
+            session_id = str(agent_session.get("value") or "") if isinstance(agent_session, dict) else ""
             agent = {
                 "pane_id": raw_pane_id,
                 "raw_pane_id": raw_pane_id,
@@ -664,10 +685,15 @@ def get_agents():
                     p.get("name") or p.get("label") or "",
                 ),
             }
-            session = cached_session_name(p.get("agent", ""), p.get("cwd", ""))
+            session = cached_session_name(p.get("agent", ""), p.get("cwd", ""), session_id)
             if session:
                 agent["session"] = session
+            if session_id:
+                session_ids[raw_pane_id] = session_id
             agents.append(agent)
+        with ACTIVITY_LOCK:
+            pane_session_ids.clear()
+            pane_session_ids.update(session_ids)
         return agents
     except (json.JSONDecodeError, KeyError):
         return None
@@ -2321,7 +2347,7 @@ HERDR_INTEGRATION_LABELS = {
 }
 _HERDR_INTEGRATION_STATUS_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*):\s*([A-Za-z]+)")
 HERDR_INTEGRATIONS_TTL = 300.0
-_herdr_integrations_cache = {"names": set(), "expires": 0.0}
+_herdr_integrations_cache = {"names": set(), "expires": 0.0, "refreshing": False}
 
 
 def herdr_installed_integrations():
@@ -2343,16 +2369,37 @@ def herdr_installed_integrations():
     return installed
 
 
+def _refresh_herdr_integrations():
+    try:
+        names = herdr_installed_integrations()
+    except Exception:
+        names = set()
+    with ACTIVITY_LOCK:
+        _herdr_integrations_cache["names"] = names
+        _herdr_integrations_cache["expires"] = time.time() + HERDR_INTEGRATIONS_TTL
+        _herdr_integrations_cache["refreshing"] = False
+
+
+def prewarm_herdr_integrations():
+    """Populate the integrations cache synchronously at startup.
+
+    Without this, the first client to connect after a restart sees an empty
+    cache while the background refresh is still running, so installed
+    integrations are missing from its agent profile list until it reconnects.
+    """
+    _refresh_herdr_integrations()
+
+
 def cached_herdr_integrations():
     now = time.time()
     with ACTIVITY_LOCK:
         if now < _herdr_integrations_cache["expires"]:
             return set(_herdr_integrations_cache["names"])
-    names = herdr_installed_integrations()
-    with ACTIVITY_LOCK:
-        _herdr_integrations_cache["names"] = names
-        _herdr_integrations_cache["expires"] = time.time() + HERDR_INTEGRATIONS_TTL
-    return set(names)
+        if _herdr_integrations_cache["refreshing"]:
+            return set(_herdr_integrations_cache["names"])
+        _herdr_integrations_cache["refreshing"] = True
+    threading.Thread(target=_refresh_herdr_integrations, daemon=True).start()
+    return set(_herdr_integrations_cache["names"])
 
 
 def load_agent_profiles():
@@ -2371,12 +2418,14 @@ def load_agent_profiles():
     candidates = dict(AGENT_PROFILE_CANDIDATES)
     # Auto-advertise agents installed via `herdr integration install <name>`
     # so they appear without a manual agent-profiles.ini entry. Configured and
-    # default candidates keep precedence for labels.
-    for name in cached_herdr_integrations():
-        candidates.setdefault(
-            name,
-            HERDR_INTEGRATION_LABELS.get(name, name.replace("-", " ").title()),
-        )
+    # default candidates keep precedence for labels. Suppressed in replacement
+    # mode, which must advertise exactly the configured profiles.
+    if not _profiles_replace_mode():
+        for name in cached_herdr_integrations():
+            candidates.setdefault(
+                name,
+                HERDR_INTEGRATION_LABELS.get(name, name.replace("-", " ").title()),
+            )
     for profile_id, label in candidates.items():
         executable = shutil.which(profile_id)
         if not executable:
@@ -2484,19 +2533,24 @@ def load_activity(limit=ACTIVITY_MAX_ITEMS):
         except OSError:
             return []
     entries = []
-    for line in lines:
+    total_bytes = 0
+    for line in reversed(lines):
+        if total_bytes + len(line) > ACTIVITY_MAX_BYTES:
+            break
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
         if isinstance(entry, dict):
             entries.append(entry)
+            total_bytes += len(line)
+    entries.reverse()
     return entries
 
 
 def trim_activity_file():
     try:
-        if ACTIVITY_FILE.stat().st_size < 2 * 1024 * 1024:
+        if ACTIVITY_FILE.stat().st_size < ACTIVITY_MAX_BYTES:
             return
     except OSError:
         return
@@ -2537,6 +2591,24 @@ def newest_jsonl(directory):
     return max(files, key=lambda item: item.stat().st_mtime)
 
 
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def session_file_for_id(project_dir, session_id):
+    """Exact ``<session_id>.jsonl`` reported by Herdr, if present.
+
+    Herdr exposes the live session id (``agent_session.value``) for agents such
+    as Qoder, so several sessions can share one working directory. Matching the
+    exact file avoids every pane collapsing to the newest title. The id is
+    whitelist-validated; it cannot contain a path separator.
+    """
+    session_id = str(session_id or "").strip()
+    if not session_id or not _SESSION_ID_RE.fullmatch(session_id):
+        return None
+    candidate = Path(project_dir) / f"{session_id}.jsonl"
+    return candidate if candidate.is_file() else None
+
+
 def last_json_titles(path, record_types):
     """Last title-bearing record of each requested type in a JSONL session file."""
     found = {}
@@ -2560,21 +2632,23 @@ def last_json_titles(path, record_types):
     return found
 
 
-def project_session_title(base_dir, cwd):
+def project_session_title(base_dir, cwd, session_id=""):
     project_dir = find_project_dir(base_dir, cwd)
-    session_file = newest_jsonl(project_dir) if project_dir else None
+    if not project_dir:
+        return ""
+    session_file = session_file_for_id(project_dir, session_id) or newest_jsonl(project_dir)
     if not session_file:
         return ""
     titles = last_json_titles(session_file, ("custom-title", "ai-title", "summary"))
     return titles.get("custom-title") or titles.get("ai-title") or titles.get("summary") or ""
 
 
-def qoder_session_name(cwd):
-    return project_session_title(QODER_PROJECTS_DIR, cwd)
+def qoder_session_name(cwd, session_id=""):
+    return project_session_title(QODER_PROJECTS_DIR, cwd, session_id)
 
 
-def claude_session_name(cwd):
-    return project_session_title(CLAUDE_PROJECTS_DIR, cwd)
+def claude_session_name(cwd, session_id=""):
+    return project_session_title(CLAUDE_PROJECTS_DIR, cwd, session_id)
 
 
 def codex_thread_names():
@@ -2638,13 +2712,25 @@ def agent_cwd_for_pane(pane_id):
     return ""
 
 
-def session_name_for_activity(agent, cwd):
+# Herdr-reported session ids (agent_session.value) keyed by pane id, captured on
+# each inventory poll so activity recorded for a pane resolves its exact session.
+pane_session_ids = {}
+
+
+def agent_session_for_pane(pane_id):
+    if not pane_id:
+        return ""
+    with ACTIVITY_LOCK:
+        return pane_session_ids.get(pane_id, "")
+
+
+def session_name_for_activity(agent, cwd, session_id=""):
     key = str(agent or "").lower()
     try:
         if "qoder" in key:
-            return qoder_session_name(cwd)
+            return qoder_session_name(cwd, session_id)
         if "claude" in key:
-            return claude_session_name(cwd)
+            return claude_session_name(cwd, session_id)
         if "codex" in key:
             return codex_session_name(cwd)
     except OSError:
@@ -2656,14 +2742,14 @@ SESSION_NAME_TTL = 60.0
 session_name_cache = {}
 
 
-def cached_session_name(agent, cwd):
-    key = (str(agent or "").lower(), str(cwd or ""))
+def cached_session_name(agent, cwd, session_id=""):
+    key = (str(agent or "").lower(), str(cwd or ""), str(session_id or ""))
     now = time.time()
     with ACTIVITY_LOCK:
         hit = session_name_cache.get(key)
         if hit and now - hit[1] < SESSION_NAME_TTL:
             return hit[0]
-    name = session_name_for_activity(agent, cwd)
+    name = session_name_for_activity(agent, cwd, session_id)
     with ACTIVITY_LOCK:
         session_name_cache[key] = (name, now)
     return name
@@ -2686,7 +2772,7 @@ def record_activity(kind, status, summary, pane_id="", agent="", project="", req
     if extract_text:
         entry["extract"] = extract_text
     if pane_id:
-        session = session_name_for_activity(agent, agent_cwd_for_pane(pane_id))
+        session = session_name_for_activity(agent, agent_cwd_for_pane(pane_id), agent_session_for_pane(pane_id))
         if session:
             entry["session"] = compact_text(session, 120)
     if isinstance(details, dict):
@@ -3011,7 +3097,8 @@ def blocked_agent_details_for_content(agent, raw_content):
 async def publish_agent_blocked(agent):
     pane_id = agent.get("pane_id", "")
     raw_content = await asyncio.to_thread(read_question_pane, pane_id)
-    await publish_blocked({
+    pre_event_id = blocked_agent_details.get(pane_id, {}).get("event_id", "")
+    msg = {
         "type": "blocked",
         "pane_id": pane_id,
         "agent": agent.get("agent", ""),
@@ -3022,7 +3109,10 @@ async def publish_agent_blocked(agent):
         "tab_number": agent.get("tab_number"),
         "workspace_id": agent.get("workspace_id", ""),
         **blocked_agent_details_for_content(agent, raw_content),
-    })
+    }
+    if pre_event_id:
+        msg["event_id"] = pre_event_id
+    await publish_blocked(msg)
 
 
 async def publish_agent_status(agent, status):
@@ -3363,6 +3453,7 @@ BLOCKED_AGENT_DETAIL_FIELDS = (
     "options",
     "interaction",
     "question_layout",
+    "event_id",
 )
 
 
@@ -3526,6 +3617,10 @@ async def poll_loop():
             claude_history_capture_times.pop(pane_id, None)
         claude_history_pending_captures.intersection_update(live_pane_ids)
         prune_blocked_agent_details(agents)
+        for a in agents:
+            pid = a["pane_id"]
+            if raw_statuses[pid] == "blocked" and last_statuses.get(pid) != "blocked":
+                blocked_agent_details.setdefault(pid, {})["event_id"] = secrets.token_urlsafe(12)
         await broadcast_agents_if_changed(agents)
         await send_requested_agent_refreshes()
         for agent in finished_agents:
@@ -4268,8 +4363,8 @@ def validate_question_answer(msg, interaction):
         or not isinstance(other_selected, bool)
     ):
         return None, None, None, "Invalid question answer"
-    if len(other_text) > 20000:
-        return None, None, None, "Other answer is longer than 20,000 characters"
+    if len(other_text) > ANSWER_MAX_CHARS:
+        return None, None, None, "Other answer is longer than 100,000 characters"
     if any(isinstance(index, bool) or not isinstance(index, int) for index in selected):
         return None, None, None, "Invalid question selection"
     selected = sorted(set(selected))
@@ -5266,6 +5361,7 @@ async def main():
     asyncio.create_task(supervise(update_check_loop, "update_check_loop"))
     asyncio.create_task(supervise(update_state_watch_loop, "update_state_watch_loop"))
     asyncio.create_task(supervise(app_deploy_state_watch_loop, "app_deploy_state_watch_loop"))
+    await asyncio.to_thread(prewarm_herdr_integrations)
     server = await serve(handle_client, WS_HOST, WS_PORT, process_request=process_request, max_size=WS_MAX_SIZE)
     print(f"Herdr Mobile Relay {RELAY_VERSION} on {WS_HOST}:{WS_PORT} (WebSocket + phone app)")
     print(f"  polling: {LOCAL_HOST}")

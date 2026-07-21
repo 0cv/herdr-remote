@@ -7,6 +7,7 @@ import {
   checkAppUpdate,
   clearPendingAppDeploy,
   clearPendingRelayUpdate,
+  newerBundle,
   newerVersion,
   normalizeAppDeployment,
   normalizeRelayUpdate,
@@ -37,6 +38,13 @@ describe('release updates', () => {
     expect(appUpdateAvailable({ version: APP_VERSION, assets: APP_ASSET_VERSION })).toBe(false);
     const [major, minor, patch] = semverTuple(APP_VERSION)!;
     expect(appUpdateAvailable({ version: `${major}.${minor + 1}.${patch}`, assets: 0 })).toBe(true);
+  });
+
+  it('newerBundle compares version first then assets', () => {
+    expect(newerBundle({ version: '0.9.0', assets: 0 }, { version: '0.8.0', assets: 99 })).toBe(true);
+    expect(newerBundle({ version: '0.8.0', assets: 5 }, { version: '0.8.0', assets: 4 })).toBe(true);
+    expect(newerBundle({ version: '0.8.0', assets: 4 }, { version: '0.8.0', assets: 4 })).toBe(false);
+    expect(newerBundle({ version: '0.7.0', assets: 99 }, { version: '0.8.0', assets: 0 })).toBe(false);
   });
 
   it('normalizes relay update data without trusting arbitrary states', () => {
