@@ -5540,6 +5540,7 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
                 self.fail_at = fail_at
                 self.send_count = 0
                 self.closed = False
+                self.close_finished = asyncio.Event()
 
             async def send(self, payload):
                 self.send_count += 1
@@ -5549,6 +5550,7 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
 
             async def close(self):
                 self.closed = True
+                self.close_finished.set()
 
         for fail_at in (1, 2):
             with self.subTest(fail_at=fail_at):
@@ -5569,7 +5571,7 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
                     ),
                 ):
                     await relay.handle_client(ws)
-                    await asyncio.sleep(0)
+                    await asyncio.wait_for(ws.close_finished.wait(), timeout=0.2)
 
                 self.assertEqual(tracked_clients.added, [])
                 self.assertNotIn(ws, tracked_clients)
